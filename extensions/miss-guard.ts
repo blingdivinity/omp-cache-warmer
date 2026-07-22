@@ -32,7 +32,7 @@ export default function (pi: ExtensionAPI) {
       cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as WarmerConfig;
     } catch {}
     if (cfg.missConfirmTokens === false) return;
-    const threshold = cfg.missConfirmTokens ?? 10_000;
+    const threshold = cfg.missConfirmTokens ?? 20_000;
 
     const id = ctx.sessionManager.getSessionId();
     const file = ctx.sessionManager.getSessionFile?.();
