@@ -190,3 +190,15 @@ Upstream proposal (smallest first):
 3. With prefix pinning (`prefix_snapshot`) landed, consider making the flush
    itself deterministic from file state, so live and resumed renderings can
    never diverge.
+
+## Addendum 2: expose rewind on the plain extension context (item 5)
+
+Live self-warming (ping + rewind inside the live process — see
+`extensions/live-warm.ts`, validated at ~99% post-rewind cache retention)
+requires `navigateTree`/`waitForIdle`, which only exist on
+`ExtensionCommandContext`. Probed at runtime: event handlers really do get
+the narrow context, so automation needs a per-session `/livewarm-on` to
+capture a command context (which, notably, stays valid after the command
+returns — arguably that leak IS the API, so widening the event context just
+acknowledges reality). Ask: promote `navigateTree` + `waitForIdle` to
+`ExtensionContext`.

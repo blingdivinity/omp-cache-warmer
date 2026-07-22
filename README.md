@@ -2,13 +2,14 @@
 
 **Keep your [oh-my-pi](https://github.com/nicobrenner/oh-my-pi) sessions' prompt caches warm — resume hours later and pay cache-read prices, not cold re-reads.**
 
-Provider prompt caches are short-lived (Claude Code is 1h). Walk away from a 600k-token session for lunch and your next message re-reads the entire prefix at full price. This project fixes that with three cooperating pieces:
+Provider prompt caches are short-lived (Claude Code is 1h). Walk away from a 600k-token session for lunch and your next message re-reads the entire prefix at full price. This project fixes that with four cooperating pieces:
 
 | Piece | Runs where | Job |
 |---|---|---|
 | **Warmer daemon** | launchd (macOS) / systemd user unit (Linux) | Pings idle sessions on a per-provider schedule so live caches never expire |
 | **prefix-pin extension** | every omp process | Freezes each session's rendered system prompt so the prefix never drifts; upgrades Anthropic sessions to the 1 h cache tier |
-| **miss-guard extension** | interactive omp sessions | Predicts when your next message would cold-miss and asks before you pay |
+| **miss-guard extension** | interactive omp sessions | Status-bar 🔥/❄ indicator; predicts cold and idle-flush misses and asks before you pay |
+| **live-warm extension** | open omp sessions (armed via `/livewarm-on`) | Self-warms the *live* process: real ping turn + rewind, dodging omp's 90 m idle-flush |
 
 ## Install
 
@@ -68,6 +69,16 @@ In-session: `/pin-status`, `/pin-refresh` (drop the pin after intentionally chan
 > **Predicted prompt-cache MISS** — this session has been idle ~87m; sending will re-read ~85,541 tokens uncached. Send anyway?
 
 Declining restores your typed message to the editor. Predicted-warm sends and small cold sends pass through silently.
+
+## The idle-flush problem, and live self-warming
+
+omp's prune/supersede pass rewrites a live process's sent history once it has been idle >90 min (`PRUNE_IDLE_FLUSH_MS`), assuming the provider cache is cold — an assumption an external warmer breaks. Consequence: **the daemon protects resumes, not open-idle processes.** Typing into an omp window that sat idle >90 min misses regardless of warming (miss-guard flags this as `(idle-flush)` and points you to `omp -c`, which re-renders from the file and *does* hit the warmed prefix).
+
+`extensions/live-warm.ts` closes the gap from inside: on the provider interval, an idle armed session sends a real `Respond with only: OK` turn through its own pipeline (byte-identical prefix by construction — measured 100 % cache hits) and then rewinds the session tree to the pre-ping leaf (measured ~99 % cached on the next real message). Each ping also resets the idle-flush clock, so the flush never fires.
+
+- Enable with `"liveWarm": true`, arm per session with **`/livewarm-on`** (a command context is required for rewind; upstream would need to widen the event context to make this automatic). `/livewarm-ping` runs one cycle manually.
+- Hard cutoff at 88 min idle: if the process slept past the window, pinging would *trigger* the flush, so it refuses and defers to miss-guard.
+- Skips when the agent is busy or messages are pending; logs to `live-warm.log`; coordinates with the daemon via shared state.
 
 ## Prefix drift
 

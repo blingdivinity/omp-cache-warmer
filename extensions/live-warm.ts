@@ -146,6 +146,15 @@ export default function (pi: ExtensionAPI) {
   const onActivity = async (_event: unknown, ctx: ExtensionContext) => {
     if (!cycling) lastActivity = Date.now();
     ensureTimer(ctx);
+    // auto-arm: the runtime may hand events the full command-capable context
+    // even though the types declare the plain one — duck-type and use it.
+    if (!cmdCtx) {
+      const candidate = ctx as Partial<ExtensionCommandContext>;
+      if (typeof candidate.navigateTree === "function" && typeof candidate.waitForIdle === "function") {
+        cmdCtx = ctx as ExtensionCommandContext;
+        logLine("auto-armed from event context (runtime exposes command surface)");
+      }
+    }
   };
   pi.on("agent_start", onActivity);
   pi.on("agent_end", onActivity);
