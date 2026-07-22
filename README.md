@@ -129,7 +129,7 @@ In-session commands: `/warm-status`, `/warm-off`, `/pin-status`, `/pin-refresh`.
 - A drift or forced re-prime = one cache **write** (1.25×/2× input price) — visible in `stats` as `cacheWrite`.
 - An unguarded cold resume of a big session = the thing this project exists to prevent.
 
-## Edge cases, honestly
+## Edge cases
 
 - **Active sessions warm themselves** — the daemon watches file mtime and stays out of the way until you've been idle a full interval.
 - **Drift between the last warm and your resume** (you rename files, then resume a minute later, without pinning) cannot be pre-warmed by anything: the new prefix doesn't exist until you send it.
