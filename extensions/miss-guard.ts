@@ -81,8 +81,20 @@ function loadWarmerConfig(): WarmerConfig {
   }
 }
 
+/**
+ * omp's prune/supersede pass flushes+rewrites the whole sent history when THIS
+ * PROCESS has been idle longer than PRUNE_IDLE_FLUSH_MS (90m upstream), on the
+ * assumption the provider cache is cold. An external warmer breaks that
+ * assumption: the cache is warm, but the rewritten request misses it anyway.
+ * We warn slightly early (85m) so the user sends before the flush window.
+ */
+const OMP_IDLE_FLUSH_MS = 90 * 60_000;
+const IDLE_FLUSH_WARN_MS = 85 * 60_000;
+
 export default function (pi: ExtensionAPI) {
   let lastCtx: ExtensionContext | undefined;
+  // last time THIS process finished agent work (in-memory = live-lineage clock)
+  let lastProcessActivity = Date.now();
 
   const refreshIndicator = () => {
     const ctx = lastCtx;
@@ -92,13 +104,14 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("cache-warmth", undefined);
       return;
     }
-    if (p.warm) {
+    const idleFlush = Date.now() - lastProcessActivity > IDLE_FLUSH_WARN_MS;
+    if (p.warm && !idleFlush) {
       const min = Math.max(1, Math.round(p.deltaMs / 60_000));
       const label = min >= 60 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}m` : `${min}m`;
       ctx.ui.setStatus("cache-warmth", `🔥 ${label}`);
     } else {
       const k = p.estTokens >= 1000 ? `~${Math.round(p.estTokens / 1000)}k` : `${p.estTokens}`;
-      ctx.ui.setStatus("cache-warmth", `❄ ${k} tok`);
+      ctx.ui.setStatus("cache-warmth", p.warm ? `❄ ${k} tok (idle-flush)` : `❄ ${k} tok`);
     }
   };
 
@@ -106,6 +119,7 @@ export default function (pi: ExtensionAPI) {
   let timerStarted = false;
   const onActivity = async (_event: unknown, ctx: ExtensionContext) => {
     lastCtx = ctx;
+    lastProcessActivity = Date.now();
     if (!timerStarted) {
       timerStarted = true;
       ctx.setInterval(refreshIndicator, 30_000);
@@ -129,13 +143,21 @@ export default function (pi: ExtensionAPI) {
 
     const p = predict(ctx, cfg);
     if (!p) return;
-    if (p.warm) return; // predicted warm — send freely
+    const processIdle = Date.now() - lastProcessActivity;
+    const idleFlush = processIdle > IDLE_FLUSH_WARN_MS;
+    if (p.warm && !idleFlush) return; // predicted warm, no flush risk — send freely
     if (p.estTokens < threshold) return; // cold but cheap — not worth interrupting
 
+    const reason =
+      p.warm && idleFlush
+        ? `The cache is warm (the warmer daemon kept it alive), but THIS omp process has been idle ` +
+          `~${Math.round(processIdle / 60_000)}m — past omp's ${Math.round(OMP_IDLE_FLUSH_MS / 60_000)}m idle-flush, ` +
+          `so omp will rewrite the sent history and miss the warm cache anyway. ` +
+          `Restarting the session (omp -c) re-renders from the file and WILL hit the warmed prefix.`
+        : `This session has been idle ~${p.idleMin}m — its ${p.provider} cache entry has likely expired.`;
     const ok = await ctx.ui.confirm(
       "Predicted prompt-cache MISS",
-      `This session has been idle ~${p.idleMin}m — its ${p.provider} cache entry has likely expired. ` +
-        `Sending now will re-read ~${p.estTokens.toLocaleString()} tokens uncached (then re-prime the cache).\n\nSend anyway?`,
+      `${reason}\n\nSending now will re-read ~${p.estTokens.toLocaleString()} tokens uncached (then re-prime).\n\nSend anyway?`,
     );
     if (ok) return; // proceed with normal flow
     ctx.ui.setEditorText(event.text); // give the typed message back

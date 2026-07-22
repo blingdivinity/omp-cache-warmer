@@ -369,6 +369,7 @@ async function sweep(cfg: Config, opts: { force?: string } = {}): Promise<void> 
       }
     }
 
+    const prevWarmAt = st.lastWarmAt ? Date.parse(st.lastWarmAt) : 0;
     log(`warming ${s.id.slice(0, 8)} (${s.model}, cwd=${s.cwd})`);
     const res = await warmSession(cfg, s);
     warmed++;
@@ -401,16 +402,27 @@ async function sweep(cfg: Config, opts: { force?: string } = {}): Promise<void> 
       if (st.disabled?.startsWith("cache predicted expired")) delete st.disabled;
       log(`  cache HIT ${((res.cacheRead / res.input) * 100).toFixed(1)}% (${res.cacheRead}/${res.input} tokens)`);
     } else if (outcome === "drift") {
-      // prefix drifted since the last warm (omp update, date rollover, system
-      // prompt change, ...). The miss itself re-primed the cache with the NEW
-      // prefix — the same one a real resume would send — so we're re-aligned.
+      // Distinguish two drift causes:
+      //  - file UNCHANGED since our last warm => the request pipeline itself
+      //    renders differently now (omp update, extension change) OR a live
+      //    omp process rewrote its in-memory context (idle-flush) — either
+      //    way, warm-vs-warm was stable before, so this is lineage-level.
+      //  - file CHANGED => real content drift (new messages, compaction).
+      const fileUnchanged = prevWarmAt > 0 && s.mtime.getTime() <= prevWarmAt;
       st.misses++;
       st.driftEvents = (st.driftEvents ?? 0) + 1;
       log(
-        `  prefix DRIFT: expected hit, got ${res.cacheRead}/${res.input} cached ` +
+        `  prefix DRIFT${fileUnchanged ? " (file unchanged — lineage divergence)" : ""}: ` +
+          `expected hit, got ${res.cacheRead}/${res.input} cached ` +
           `(re-primed new prefix, wrote ${res.cacheWrite} tokens) — drift ${st.misses}/2 consecutive`,
       );
-      if (st.misses >= 2) {
+      if (fileUnchanged) {
+        st.disabled =
+          "lineage divergence: warm request changed while the session file did not " +
+          "(omp/extension update, or a live omp process rewrote its context after long idle). " +
+          "Warming paused; a fresh resume or /compact re-aligns, then: omp-cache-warmer warm <id>";
+        log(`  disabled ${s.id.slice(0, 8)}: ${st.disabled}`);
+      } else if (st.misses >= 2) {
         st.disabled =
           "prefix unstable: changed between consecutive warms twice — warming is futile " +
           "(a real resume would miss too); likely dynamic system prompt content (date, dir tree, extensions)";

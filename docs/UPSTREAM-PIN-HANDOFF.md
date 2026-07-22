@@ -159,3 +159,34 @@ Enables miss warnings without sidecar mtime math (see
 - [ ] after merge: strip `prefix-pin.ts` from omp-cache-warmer (keep warmer
       daemon + miss-guard; miss-guard migrates to the predicted-cache API if
       #5 lands)
+
+## Addendum (2026-07-22): the idle-flush collision — a fourth upstream item
+
+Root cause of a production full-miss, found in
+`packages/coding-agent/src/session/agent-session.ts`:
+
+```ts
+const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
+// "Idle gap after which the supersede pass may flush the whole sent region
+//  (the provider cache is cold, so re-writing it is free)."
+```
+
+A live omp process idle >90m rewrites its sent history on the next message
+(prunes superseded tool results — NO compaction entry is written). The
+"cache is cold anyway" assumption is inverted by an external warmer: we
+measured a 222k-token prefix, verified warm 45 min earlier (usage.cacheRead
+= 221,984), fully missed (cacheRead 0) because the flush changed the request
+bytes. Warm-vs-warm stayed consistent (resumed copies don't carry the live
+process's prune bookkeeping), proving the rewrite is process-local state.
+
+Upstream proposal (smallest first):
+1. Make `PRUNE_IDLE_FLUSH_MS` a setting (`prune.idleFlushMs`), so cache-warming
+   setups can raise/disable it.
+2. Better: gate the flush on *predicted cache state* rather than idle time
+   alone — the session knows its provider TTL and its last request timestamp;
+   with an external-warm signal (or simply a longer configured retention) the
+   flush is not "free" and should be skipped or deferred until the next
+   natural cache re-prime.
+3. With prefix pinning (`prefix_snapshot`) landed, consider making the flush
+   itself deterministic from file state, so live and resumed renderings can
+   never diverge.
