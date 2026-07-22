@@ -2,7 +2,7 @@
 
 **Keep your [oh-my-pi](https://github.com/nicobrenner/oh-my-pi) sessions' prompt caches warm — resume hours later and pay cache-read prices, not cold re-reads.**
 
-Provider prompt caches are short-lived (Anthropic: 5 min default, 1 h extended). Walk away from a 100k-token session for lunch and your next message re-reads the entire prefix at full price. This project fixes that with three cooperating pieces:
+Provider prompt caches are short-lived (Claude Code is 1h). Walk away from a 600k-token session for lunch and your next message re-reads the entire prefix at full price. This project fixes that with three cooperating pieces:
 
 | Piece | Runs where | Job |
 |---|---|---|
