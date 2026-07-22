@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * pi-cache-warmer — keeps oh-my-pi session prompt caches warm.
+ * omp-cache-warmer — keeps oh-my-pi session prompt caches warm.
  *
  * How it works:
  *  - Scans ~/.omp/agent/sessions for sessions whose last *real* user message
@@ -51,7 +51,7 @@ interface Config {
 }
 
 const ROOT = join(homedir(), ".omp", "agent");
-const DATA_DIR = join(ROOT, "pi-cache-warmer");
+const DATA_DIR = join(ROOT, "omp-cache-warmer");
 const CONFIG_PATH = join(DATA_DIR, "config.json");
 const STATE_PATH = join(DATA_DIR, "state.json");
 const LOG_PATH = join(DATA_DIR, "warmer.log");
@@ -234,7 +234,7 @@ interface WarmResult {
 }
 
 async function warmSession(cfg: Config, s: SessionInfo): Promise<WarmResult> {
-  const tmp = mkdtempSync(join(tmpdir(), "pi-cache-warmer-"));
+  const tmp = mkdtempSync(join(tmpdir(), "omp-cache-warmer-"));
   try {
     const copy = join(tmp, basename(s.file));
     cpSync(s.file, copy);
@@ -352,7 +352,7 @@ async function sweep(cfg: Config, opts: { force?: string } = {}): Promise<void> 
       const estTokens = st.lastInputTokens ?? Math.round(statSync(s.file).size / 4);
       if (cfg.coldReprime === "never" || estTokens > cfg.coldReprime) {
         st.disabled = `cache predicted expired; cold re-prime ~${estTokens} tokens exceeds coldReprime (${cfg.coldReprime})`;
-        log(`skipping ${s.id.slice(0, 8)}: ${st.disabled} — force with: pi-cache-warmer warm ${s.id.slice(0, 8)}`);
+        log(`skipping ${s.id.slice(0, 8)}: ${st.disabled} — force with: omp-cache-warmer warm ${s.id.slice(0, 8)}`);
         continue;
       }
     }
@@ -444,7 +444,7 @@ function status(cfg: Config) {
 }
 
 async function daemon(cfg: Config) {
-  log(`pi-cache-warmer daemon started (window ${cfg.windowHours}h)`);
+  log(`omp-cache-warmer daemon started (window ${cfg.windowHours}h)`);
   // append-mode logging for the daemon
   while (true) {
     try {
@@ -504,7 +504,7 @@ async function main() {
       await sweep(cfg);
       break;
     case "warm":
-      if (!arg) throw new Error("usage: pi-cache-warmer warm <session-id-prefix>");
+      if (!arg) throw new Error("usage: omp-cache-warmer warm <session-id-prefix>");
       await sweep(cfg, { force: arg });
       break;
     case "status":
@@ -512,7 +512,7 @@ async function main() {
       status(cfg);
       break;
     case "enable": {
-      if (!arg) throw new Error("usage: pi-cache-warmer enable <session-id-prefix>");
+      if (!arg) throw new Error("usage: omp-cache-warmer enable <session-id-prefix>");
       const state = loadState();
       for (const [id, st] of Object.entries(state)) if (id.startsWith(arg)) { delete st.disabled; st.misses = 0; }
       saveState(state);
@@ -557,18 +557,18 @@ async function main() {
       console.log(readFileSync(CONFIG_PATH, "utf8"));
       break;
     default:
-      console.log(`pi-cache-warmer — keep omp prompt caches warm
+      console.log(`omp-cache-warmer — keep omp prompt caches warm
 
 usage:
-  pi-cache-warmer status            show sessions in the warm window (default)
-  pi-cache-warmer once              run a single warm sweep
-  pi-cache-warmer daemon            run forever (sweeps every minute)
-  pi-cache-warmer warm <id>         force-warm one session now
-  pi-cache-warmer enable <id>       re-enable a disabled session
-  pi-cache-warmer install           install as macOS launchd agent
-  pi-cache-warmer uninstall         remove the launchd agent
-  pi-cache-warmer stats             hit/miss ledger summary (history.jsonl)
-  pi-cache-warmer config            show config path + contents`);
+  omp-cache-warmer status            show sessions in the warm window (default)
+  omp-cache-warmer once              run a single warm sweep
+  omp-cache-warmer daemon            run forever (sweeps every minute)
+  omp-cache-warmer warm <id>         force-warm one session now
+  omp-cache-warmer enable <id>       re-enable a disabled session
+  omp-cache-warmer install           install as macOS launchd agent
+  omp-cache-warmer uninstall         remove the launchd agent
+  omp-cache-warmer stats             hit/miss ledger summary (history.jsonl)
+  omp-cache-warmer config            show config path + contents`);
   }
 }
 

@@ -6,14 +6,14 @@ import { join } from "node:path";
 /**
  * Prefix pinning: freezes a session's rendered system prompt on first use and
  * replays it byte-for-byte on every subsequent turn — interactive resumes AND
- * pi-cache-warmer pings alike. This removes prompt drift (date rollover,
+ * omp-cache-warmer pings alike. This removes prompt drift (date rollover,
  * directory-tree changes, omp prompt tweaks) as a cache-miss source.
  *
  * Tool schemas are the one prefix component an extension cannot pin; those
  * only change on omp version bumps (see README "Upstream" note).
  */
 
-const DATA_DIR = join(homedir(), ".omp", "agent", "pi-cache-warmer");
+const DATA_DIR = join(homedir(), ".omp", "agent", "omp-cache-warmer");
 const PINS_DIR = join(DATA_DIR, "pins");
 const CONFIG_PATH = join(DATA_DIR, "config.json");
 

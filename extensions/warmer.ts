@@ -4,12 +4,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /**
- * Thin companion extension for pi-cache-warmer (the standalone daemon).
+ * Thin companion extension for omp-cache-warmer (the standalone daemon).
  * Adds /warm-status and /warm-off inside omp. The daemon does the real work
  * so warming keeps happening after you close this session.
  */
 
-const DATA_DIR = join(homedir(), ".omp", "agent", "pi-cache-warmer");
+const DATA_DIR = join(homedir(), ".omp", "agent", "omp-cache-warmer");
 const CONFIG_PATH = join(DATA_DIR, "config.json");
 const STATE_PATH = join(DATA_DIR, "state.json");
 
@@ -22,7 +22,7 @@ interface WarmState {
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("warm-status", {
-    description: "Show pi-cache-warmer status for this session",
+    description: "Show omp-cache-warmer status for this session",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) return;
       const id = ctx.sessionManager.getSessionId() ?? "";
@@ -32,7 +32,7 @@ export default function (pi: ExtensionAPI) {
       } catch {}
       const st = state[id];
       if (!existsSync(DATA_DIR)) {
-        ctx.ui.notify("pi-cache-warmer has never run. Start it: pi-cache-warmer install", "warning");
+        ctx.ui.notify("omp-cache-warmer has never run. Start it: omp-cache-warmer install", "warning");
         return;
       }
       if (!st?.lastWarmAt) {
@@ -46,7 +46,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("warm-off", {
-    description: "Exclude this session from pi-cache-warmer",
+    description: "Exclude this session from omp-cache-warmer",
     handler: async (_args, ctx) => {
       const id = ctx.sessionManager.getSessionId();
       if (!id) return;

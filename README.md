@@ -1,4 +1,4 @@
-# pi-cache-warmer
+# omp-cache-warmer
 
 Keeps your oh-my-pi sessions' prompt caches warm so resuming a session hours later is instant and cheap.
 
@@ -35,7 +35,7 @@ bun src/index.ts config        # show config path + contents
 
 ## Config
 
-`~/.omp/agent/pi-cache-warmer/config.json` (created on first run):
+`~/.omp/agent/omp-cache-warmer/config.json` (created on first run):
 
 ```jsonc
 {
@@ -57,7 +57,7 @@ bun src/index.ts config        # show config path + contents
 
 ### Cold re-prime guard
 
-No provider offers a free "does this cache still exist?" probe — cache status only comes back in the usage of a *paid* request. So the warmer predicts expiry from TTL math (it knows exactly when it last refreshed each cache). When a cache is predicted expired, re-warming means paying a full cache *write* over the whole prefix. `coldReprime` bounds that: expired sessions whose estimated prefix exceeds the limit are disabled with a logged reason instead of silently billed. Override per session with `pi-cache-warmer warm <id>` (a successful forced warm re-enables it) or `pi-cache-warmer enable <id>`.
+No provider offers a free "does this cache still exist?" probe — cache status only comes back in the usage of a *paid* request. So the warmer predicts expiry from TTL math (it knows exactly when it last refreshed each cache). When a cache is predicted expired, re-warming means paying a full cache *write* over the whole prefix. `coldReprime` bounds that: expired sessions whose estimated prefix exceeds the limit are disabled with a logged reason instead of silently billed. Override per session with `omp-cache-warmer warm <id>` (a successful forced warm re-enables it) or `omp-cache-warmer enable <id>`.
 
 ### Prefix drift (omp updates, date rollover, changed files)
 
@@ -71,7 +71,7 @@ Each warm rebuilds the prompt through the **same code path a real resume uses** 
 
 `extensions/prefix-pin.ts` eliminates drift at the source. omp's `before_agent_start` event exposes the fully rendered system prompt and lets an extension replace it, so:
 
-1. The first turn of a session **captures** the rendered prompt into `~/.omp/agent/pi-cache-warmer/pins/<session-id>.json`.
+1. The first turn of a session **captures** the rendered prompt into `~/.omp/agent/omp-cache-warmer/pins/<session-id>.json`.
 2. Every later turn — interactive resumes *and* warmer pings (both load the same extension) — **replays the pinned prompt byte-for-byte**. Date rollover, directory-tree changes, and prompt tweaks no longer change the prefix.
 3. **Pins never expire.** Every resumed session — even one whose cache went cold — replays its original prefix; a cold resume then re-primes the *same stable prefix* instead of a freshly drifted one. Unused pins are pruned after 60 days (a later resume simply re-pins). Disable globally with `"pinPrefixes": false`; re-capture per session with `/pin-refresh`.
 

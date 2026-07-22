@@ -1,10 +1,10 @@
 {
-  "name": "pi-cache-warmer",
+  "name": "omp-cache-warmer",
   "version": "0.1.0",
   "description": "Keeps oh-my-pi session prompt caches warm by re-sending the exact prompt prefix on a per-provider interval",
   "type": "module",
   "bin": {
-    "pi-cache-warmer": "src/index.ts"
+    "omp-cache-warmer": "src/index.ts"
   },
   "pi": {
     "extensions": ["extensions/warmer.ts", "extensions/prefix-pin.ts"]
