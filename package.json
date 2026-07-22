@@ -7,7 +7,7 @@
     "omp-cache-warmer": "src/index.ts"
   },
   "pi": {
-    "extensions": ["extensions/warmer.ts", "extensions/prefix-pin.ts"]
+    "extensions": ["extensions/warmer.ts", "extensions/prefix-pin.ts", "extensions/miss-guard.ts"]
   },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": "*",
