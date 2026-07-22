@@ -68,7 +68,7 @@ const DEFAULT_CONFIG: Config = {
   perProject: "latest",
   maxWarmsPerSweep: 4,
   warmTimeoutSeconds: 300,
-  coldReprime: 30_000,
+  coldReprime: "never",
   exclude: [],
   ompBin: "omp",
 };

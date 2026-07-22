@@ -49,7 +49,7 @@ bun src/index.ts config        # show config path + contents
   "perProject": "latest",          // "latest" = newest session per project, or "all"
   "maxWarmsPerSweep": 4,
   "warmTimeoutSeconds": 300,
-  "coldReprime": 30000,            // "always" | "never" | max tokens to re-prime an expired cache
+  "coldReprime": "never",         // "always" | "never" | max tokens: warmer only KEEPS caches warm
   "exclude": [],                   // session id prefixes to skip
   "ompBin": "omp"
 }
