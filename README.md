@@ -102,6 +102,7 @@ The background service is named so future-you knows what it is: `com.oh-my-pi.ke
 ```jsonc
 {
   "windowHours": 24,               // keep warming this long after the last user message
+  "windowHoursByProvider": {},     // per-provider window override (hours)
   "intervals": {                   // minutes, keyed by provider prefix of the model id
     "anthropic": 55,
     "openai-codex": 481

@@ -22,6 +22,8 @@ import { join, basename } from "node:path";
 interface Config {
   /** hours after last user message to keep warming */
   windowHours: number;
+  /** per-provider window override (hours), keyed by provider prefix */
+  windowHoursByProvider: Record<string, number>;
   /** warm interval per provider prefix, in minutes */
   intervals: Record<string, number>;
   /** fallback interval (minutes) for unlisted providers */
@@ -59,6 +61,7 @@ const HISTORY_PATH = join(DATA_DIR, "history.jsonl");
 
 const DEFAULT_CONFIG: Config = {
   windowHours: 24,
+  windowHoursByProvider: {},
   intervals: {
     anthropic: 55, // Anthropic 1h cache TTL -> refresh at 55m
     "openai-codex": 8 * 60 + 1, // 8h01m -> fires twice in a 24h window (8h01m, 16h02m)
@@ -81,7 +84,12 @@ function loadConfig(): Config {
   }
   try {
     const user = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-    return { ...DEFAULT_CONFIG, ...user, intervals: { ...DEFAULT_CONFIG.intervals, ...(user.intervals ?? {}) } };
+    return {
+      ...DEFAULT_CONFIG,
+      ...user,
+      intervals: { ...DEFAULT_CONFIG.intervals, ...(user.intervals ?? {}) },
+      windowHoursByProvider: { ...DEFAULT_CONFIG.windowHoursByProvider, ...(user.windowHoursByProvider ?? {}) },
+    };
   } catch (e) {
     log(`config parse error, using defaults: ${e}`);
     return { ...DEFAULT_CONFIG };
@@ -140,7 +148,9 @@ function scanSessions(cfg: Config): SessionInfo[] {
   const root = cfg.sessionsRoot ?? join(ROOT, "sessions");
   const out: SessionInfo[] = [];
   if (!existsSync(root)) return out;
-  const cutoff = Date.now() - cfg.windowHours * 3_600_000;
+  // pre-filter uses the LARGEST window; per-provider windows apply post-parse
+  const maxWindowH = Math.max(cfg.windowHours, ...Object.values(cfg.windowHoursByProvider));
+  const cutoff = Date.now() - maxWindowH * 3_600_000;
 
   for (const dir of readdirSync(root)) {
     const dirPath = join(root, dir);
@@ -158,7 +168,9 @@ function scanSessions(cfg: Config): SessionInfo[] {
       // file itself hasn't been written since the cutoff
       if (st.mtimeMs < cutoff) continue;
       const info = parseSession(file, st.mtime);
-      if (info && info.lastUserAt.getTime() >= cutoff) candidates.push(info);
+      if (!info) continue;
+      const windowH = cfg.windowHoursByProvider[info.provider] ?? cfg.windowHours;
+      if (info.lastUserAt.getTime() >= Date.now() - windowH * 3_600_000) candidates.push(info);
     }
     if (cfg.perProject === "latest" && candidates.length > 1) {
       candidates.sort((a, b) => b.lastUserAt.getTime() - a.lastUserAt.getTime());
@@ -432,7 +444,7 @@ function status(cfg: Config) {
     const interval = (cfg.intervals[s.provider] ?? cfg.defaultIntervalMinutes) * 60_000;
     const lastActivity = Math.max(s.lastUserAt.getTime(), st?.lastWarmAt ? Date.parse(st.lastWarmAt) : 0, s.mtime.getTime());
     const due = lastActivity + interval - now;
-    const windowLeft = s.lastUserAt.getTime() + cfg.windowHours * 3_600_000 - now;
+    const windowLeft = s.lastUserAt.getTime() + (cfg.windowHoursByProvider[s.provider] ?? cfg.windowHours) * 3_600_000 - now;
     const flag = st?.disabled ? ` DISABLED (${st.disabled})` : "";
     const hit = st?.lastCacheRead != null ? ` lastHit=${st.lastCacheRead}tok` : "";
     const drift = st?.driftEvents ? ` drifts=${st.driftEvents}` : "";
