@@ -1,7 +1,7 @@
 /** Shared prediction logic + constants for the miss-guard extension. */
 
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -59,6 +59,36 @@ export function loadWarmerConfig(): WarmerConfig {
   }
 }
 
+/**
+ * Ground truth for the current context size: the usage block of the LAST
+ * assistant message in the session file. Unlike the daemon's snapshot or
+ * size/4, this survives compaction (which shrinks the next request while the
+ * append-only file only grows).
+ */
+export function tailContextTokens(file: string): number | undefined {
+  try {
+    const size = statSync(file).size;
+    const fd = openSync(file, "r");
+    const len = Math.min(size, 512 * 1024);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    closeSync(fd);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"usage"')) continue;
+      try {
+        const e = JSON.parse(lines[i]) as {
+          type?: string;
+          message?: { role?: string; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } };
+        };
+        const u = e.type === "message" && e.message?.role === "assistant" ? e.message.usage : undefined;
+        if (u) return (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+      } catch {}
+    }
+  } catch {}
+  return undefined;
+}
+
 export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | undefined {
   const id = ctx.sessionManager.getSessionId();
   const file = ctx.sessionManager.getSessionFile?.();
@@ -89,7 +119,7 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
     if (st?.disabled?.startsWith("lineage divergence")) prefixChanged = { kind: "diverged", detail: st.disabled };
     else if (st?.disabled?.startsWith("prefix unstable")) prefixChanged = { kind: "unstable", detail: st.disabled };
   } catch {}
-  // a pin refreshed after the last warm means the cache holds the OLD prompt
+  // a pin refreshed after the cache was last written means it holds the OLD prompt
   if (!prefixChanged && lastWarmMs > 0) {
     try {
       const pinStat = statSync(join(DATA_DIR, "pins", `${id}.json`));
@@ -108,9 +138,17 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
         lastTouch = fst.mtimeMs;
         touchSource = "session activity";
       }
+      // freshest first: real usage from the file tail beats the daemon's
+      // (possibly pre-compaction) snapshot, which beats crude size/4
+      if (fst.mtimeMs > lastWarmMs) estTokens = tailContextTokens(file) ?? estTokens;
       if (!estTokens) estTokens = Math.round(fst.size / 4);
     } catch {}
   }
+  // Stale-flag guard: the daemon's prefix-change verdicts (and the pin check)
+  // describe the cache as of the LAST WARM. If this session's own activity
+  // wrote the cache more recently, the cached prefix IS the live rendering —
+  // whatever the daemon observed hours ago no longer applies.
+  if (prefixChanged && touchSource === "session activity") prefixChanged = undefined;
   if (lastTouch === 0) return; // brand-new session: nothing cached yet
 
   const aliveMs = intervalMs + 10 * 60_000;
