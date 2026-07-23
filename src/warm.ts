@@ -9,6 +9,7 @@ import type { SessionEntry } from "./state";
 
 export interface WarmResult {
   ok: boolean;
+  skipped?: boolean;
   cacheRead: number;
   cacheWrite: number;
   input: number;
@@ -29,13 +30,25 @@ export async function warmSession(cfg: Config, s: SessionInfo): Promise<WarmResu
         stderr: "pipe",
         stdin: "ignore",
         // rewrite the prefix as a 1h-TTL cache entry on Anthropic
-        env: { ...process.env, PI_CACHE_RETENTION: "long" },
+        env: { ...process.env, PI_CACHE_RETENTION: "long", OMP_CACHE_WARMER_WARM: "1" },
       },
     );
     const killer = setTimeout(() => proc.kill(), cfg.warmTimeoutSeconds * 1000);
     const exit = await proc.exited;
     clearTimeout(killer);
     if (exit !== 0) {
+      if (exit === 93) {
+        // the pin extension detected system-prompt drift against the live
+        // session and aborted before the paid request — no cache touched
+        return {
+          ok: false,
+          skipped: true,
+          cacheRead: 0,
+          cacheWrite: 0,
+          input: 0,
+          detail: "pre-flight drift: warm rendering differs from live — aborted before the paid request",
+        };
+      }
       const err = await new Response(proc.stderr).text();
       return { ok: false, cacheRead: 0, cacheWrite: 0, input: 0, detail: `omp exited ${exit}: ${err.slice(-400)}` };
     }

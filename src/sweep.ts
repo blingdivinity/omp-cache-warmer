@@ -79,6 +79,27 @@ function classifyDrift(s: SessionInfo, st: SessionState, res: WarmResult, prevWa
   }
 }
 
+function preflightDrift(s: SessionInfo, st: SessionState) {
+  // Pre-flight drift: the pin extension detected that the daemon's rendered
+  // system prompt diverges from the live session's and aborted at 0 tokens.
+  // Count it in the SAME 24h window classifyDrift uses, but don't touch
+  // st.misses — no expected-hit was paid, so the consecutive-miss gauge is
+  // irrelevant here. Detection is free, so we only disable on chronic drift.
+  const prevDriftAt = st.lastDriftAt ? Date.parse(st.lastDriftAt) : 0;
+  const withinWindow = prevDriftAt > 0 && Date.now() - prevDriftAt < 24 * 60 * 60 * 1000;
+  st.driftEvents = withinWindow ? (st.driftEvents ?? 0) + 1 : 1;
+  st.lastDriftAt = new Date().toISOString();
+  log(`  pre-flight drift: warm rendering != live — aborted, 0 tokens (drift ${st.driftEvents}/3 in 24h)`);
+  if ((st.driftEvents ?? 0) >= 3) {
+    st.disabled =
+      "chronic pre-flight drift: 3 aborts within 24h — the daemon's rendering diverges from this session's " +
+      "system prompt. Pre-flight detection is free so repeated aborts are cheap, but pointless; warming paused " +
+      "(a fresh resume/compact re-aligns). Force with: omp-cache-warmer warm " +
+      s.id.slice(0, 8);
+    log(`  disabled ${s.id.slice(0, 8)}: ${st.disabled}`);
+  }
+}
+
 export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise<void> {
   const version = ompVersion(cfg);
   const state = loadState();
@@ -145,17 +166,28 @@ export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise
     log(`warming ${s.id.slice(0, 8)} (${s.model}, cwd=${s.cwd})`);
     const res = await warmSession(cfg, s);
     warmed++;
-    st.lastWarmAt = new Date().toISOString();
-    if (version) st.ompVersion = version;
-    st.lastCacheRead = res.cacheRead;
-    st.lastCacheWrite = res.cacheWrite;
-    st.lastInputTokens = res.input;
-    const outcome = !res.ok ? "failed" : res.input > 0 && res.cacheRead / res.input >= 0.5 ? "hit" : expectHit ? "drift" : "reprime";
+    const warmTs = new Date().toISOString();
+    if (!res.skipped) {
+      // nothing touched the cache on a pre-flight abort — leave the
+      // last-warm gauges untouched so TTL/expiry math is unaffected
+      st.lastWarmAt = warmTs;
+      if (version) st.ompVersion = version;
+      st.lastCacheRead = res.cacheRead;
+      st.lastCacheWrite = res.cacheWrite;
+      st.lastInputTokens = res.input;
+    }
+    const outcome = res.skipped
+      ? "preflight-drift"
+      : !res.ok
+        ? "failed"
+        : res.input > 0 && res.cacheRead / res.input >= 0.5
+          ? "hit"
+          : expectHit ? "drift" : "reprime";
     try {
       appendFileSync(
         HISTORY_PATH,
         JSON.stringify({
-          ts: st.lastWarmAt,
+          ts: warmTs,
           session: s.id,
           model: s.model,
           outcome,
@@ -166,6 +198,10 @@ export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise
         }) + "\n",
       );
     } catch {}
+    if (res.skipped) {
+      preflightDrift(s, st);
+      continue; // free abort: cache untouched, nothing more to do
+    }
     if (!res.ok) {
       log(`  warm failed: ${res.detail}`);
       continue; // transient failure: don't count as prefix miss

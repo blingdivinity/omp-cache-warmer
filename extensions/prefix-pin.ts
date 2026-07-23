@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, utimesSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, utimesSync, appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -16,10 +17,60 @@ import { join } from "node:path";
 const DATA_DIR = join(homedir(), ".omp", "agent", "omp-cache-warmer");
 const PINS_DIR = join(DATA_DIR, "pins");
 const CONFIG_PATH = join(DATA_DIR, "config.json");
+const PREFLIGHT_LOG = join(DATA_DIR, "preflight.log");
 
 interface Pin {
   createdAt: string;
   systemPrompt: string[];
+}
+
+interface RenderSlot {
+  ts: string;
+  hash: string;
+  chars: number;
+}
+
+interface RenderSidecar {
+  live?: RenderSlot;
+  warm?: RenderSlot;
+}
+
+// The render-hash sidecar is pre-flight drift instrumentation. Both the live
+// interactive session and the omp-cache-warmer daemon (warm mode) hash their
+// EFFECTIVE system prompt into PINS_DIR/<id>.render.json. In warm mode, a live
+// hash that disagrees with ours means the daemon renders a different system
+// prompt than the session — the paid warm would full-miss, so we abort at exit
+// 93 (0 tokens) before sending anything.
+//
+// NOTE: equal hashes here but a paid 0/N miss later proves the divergence lives
+// OUTSIDE the system prompt (tool schemas / message rendering) — upstream-pin
+// territory an extension cannot fix. This sidecar is exactly what distinguishes
+// the two cases: system-prompt drift (caught free here) vs. everything else.
+function updateRenderSidecar(id: string, warmMode: boolean, effectivePrompt: string[]) {
+  const hash = createHash("sha256").update(JSON.stringify(effectivePrompt)).digest("hex").slice(0, 16);
+  const chars = JSON.stringify(effectivePrompt).length;
+  const sidecarPath = join(PINS_DIR, `${id}.render.json`);
+  let sidecar: RenderSidecar = {};
+  try {
+    sidecar = JSON.parse(readFileSync(sidecarPath, "utf8")) as RenderSidecar;
+  } catch {}
+  if (warmMode && sidecar.live && sidecar.live.hash !== hash) {
+    try {
+      appendFileSync(
+        PREFLIGHT_LOG,
+        `[${new Date().toISOString()}] ${id.slice(0, 8)} pre-flight drift: ` +
+          `warm hash ${hash} != live hash ${sidecar.live.hash} (live ts ${sidecar.live.ts}) — aborting warm, 0 tokens\n`,
+      );
+    } catch {}
+    process.exit(93);
+  }
+  const slot: RenderSlot = { ts: new Date().toISOString(), hash, chars };
+  if (warmMode) sidecar.warm = slot;
+  else sidecar.live = slot;
+  try {
+    mkdirSync(PINS_DIR, { recursive: true });
+    writeFileSync(sidecarPath, JSON.stringify(sidecar, null, 2));
+  } catch {}
 }
 
 export default function (pi: ExtensionAPI) {
@@ -45,6 +96,7 @@ export default function (pi: ExtensionAPI) {
       pin = JSON.parse(readFileSync(pinPath, "utf8")) as Pin;
     } catch {}
 
+    const warmMode = process.env.OMP_CACHE_WARMER_WARM === "1";
     if (pin) {
       // replay the frozen prompt byte-for-byte — pins never expire, so every
       // resumed session keeps its original prefix even after the cache went
@@ -53,6 +105,8 @@ export default function (pi: ExtensionAPI) {
         const t = new Date();
         utimesSync(pinPath, t, t); // mark as in-use for the 60-day pruner
       } catch {}
+      // may process.exit(93) in warm mode if our replay diverges from live
+      updateRenderSidecar(id, warmMode, pin.systemPrompt);
       return { systemPrompt: pin.systemPrompt };
     }
     // first turn of this session: capture the rendered prompt as the pin
@@ -61,6 +115,8 @@ export default function (pi: ExtensionAPI) {
       pinPath,
       JSON.stringify({ createdAt: new Date().toISOString(), systemPrompt: event.systemPrompt } satisfies Pin, null, 2),
     );
+    // may process.exit(93) in warm mode if this fresh capture diverges from live
+    updateRenderSidecar(id, warmMode, event.systemPrompt);
   });
 
   pi.registerCommand("pin-status", {
