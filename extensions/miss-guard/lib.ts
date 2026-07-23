@@ -26,6 +26,7 @@ export interface WarmerConfig {
   defaultIntervalMinutes?: number;
   /** predicted-miss confirmation threshold in tokens; false disables the dialog */
   missConfirmTokens?: number | false;
+  coldReprime?: "always" | "never" | number;
 }
 
 export interface Prediction {
@@ -34,6 +35,12 @@ export interface Prediction {
   deltaMs: number;
   estTokens: number;
   idleMin: number;
+  /** minutes a cache entry survives after its last touch (provider TTL + slack) */
+  aliveMin: number;
+  /** when the cache was last refreshed */
+  lastTouchAt: Date;
+  /** what refreshed it: the warmer daemon's ping or the session's own request */
+  touchSource: "warmer ping" | "session activity";
   provider: string;
 }
 
@@ -55,6 +62,7 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
   // was touched (own request or warmer ping) within interval + slack
   const intervalMs = (cfg.intervals?.[provider] ?? cfg.defaultIntervalMinutes ?? 55) * 60_000;
   let lastTouch = 0;
+  let touchSource: "warmer ping" | "session activity" = "session activity";
   let estTokens = 0;
   try {
     const state = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Record<
@@ -62,13 +70,19 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
       { lastWarmAt?: string; lastInputTokens?: number }
     >;
     const st = state[id];
-    if (st?.lastWarmAt) lastTouch = Date.parse(st.lastWarmAt);
+    if (st?.lastWarmAt) {
+      lastTouch = Date.parse(st.lastWarmAt);
+      touchSource = "warmer ping";
+    }
     if (st?.lastInputTokens) estTokens = st.lastInputTokens;
   } catch {}
   if (file) {
     try {
       const fst = statSync(file);
-      lastTouch = Math.max(lastTouch, fst.mtimeMs);
+      if (fst.mtimeMs > lastTouch) {
+        lastTouch = fst.mtimeMs;
+        touchSource = "session activity";
+      }
       if (!estTokens) estTokens = Math.round(fst.size / 4);
     } catch {}
   }
@@ -81,6 +95,9 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
     deltaMs: Math.abs(aliveMs - idle),
     estTokens,
     idleMin: Math.round(idle / 60_000),
+    aliveMin: Math.round(aliveMs / 60_000),
+    lastTouchAt: new Date(lastTouch),
+    touchSource,
     provider,
   };
 }

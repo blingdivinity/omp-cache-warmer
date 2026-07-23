@@ -78,13 +78,18 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    const touchAgo = p.lastTouchAt.toLocaleTimeString();
     const reason =
       p.warm && idleFlush
-        ? `The cache is warm (the warmer daemon kept it alive), but THIS omp process has been idle ` +
-          `~${Math.round(processIdle / 60_000)}m — past omp's ${Math.round(OMP_IDLE_FLUSH_MS / 60_000)}m idle-flush, ` +
-          `so omp will rewrite the sent history and miss the warm cache anyway. ` +
-          `Restarting the session (omp -c) re-renders from the file and WILL hit the warmed prefix.`
-        : `This session has been idle ~${p.idleMin}m — its ${p.provider} cache entry has likely expired.`;
+        ? `WHY: the provider cache is actually WARM (last refreshed ${touchAgo} by ${p.touchSource}) — but THIS ` +
+          `omp process has been idle ~${Math.round(processIdle / 60_000)}m, past omp's ` +
+          `${Math.round(OMP_IDLE_FLUSH_MS / 60_000)}m idle-flush. On your next message omp rewrites the sent ` +
+          `history in-place, so the request bytes no longer match the warmed prefix → guaranteed miss. ` +
+          `Restarting the session (omp -c) re-renders from the file and WILL hit the warmed prefix instead.`
+        : `WHY: ${p.provider} cache entries survive ~${p.aliveMin}m after their last refresh, and this session's ` +
+          `was last refreshed ${touchAgo} by ${p.touchSource} — ${p.idleMin}m ago, ${p.idleMin - p.aliveMin}m past ` +
+          `expiry.${cfg.coldReprime === "never" ? " (The warmer daemon doesn't revive expired caches: coldReprime=\"never\".)" : ""} Your next request ` +
+          `re-reads the full prefix and re-primes a fresh cache entry.`;
     // "Warm first" is only offered when the ping itself would HIT: the cache
     // must still be warm AND this process must not have crossed omp's 90m
     // idle-flush line. Past either point, a ping pays the exact same full miss
