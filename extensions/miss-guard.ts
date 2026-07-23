@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { readFileSync, statSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { liveWarmBridge } from "./livewarm-shared";
@@ -96,6 +96,47 @@ export default function (pi: ExtensionAPI) {
   let lastCtx: ExtensionContext | undefined;
   // last time THIS process finished agent work (in-memory = live-lineage clock)
   let lastProcessActivity = Date.now();
+  /** prediction made when a user message was released, awaiting its actual usage */
+  let pendingPrediction: { warm: boolean; idleFlush: boolean; estTokens: number; ts: string } | undefined;
+
+  const recordOutcome = (u: { input?: number; cacheRead?: number; cacheWrite?: number }, ctx: ExtensionContext) => {
+    const pred = pendingPrediction;
+    pendingPrediction = undefined;
+    if (!pred) return;
+    const total = (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+    if (total < 1000) return; // aborted/trivial request — no verdict
+    const actualHit = (u.cacheRead ?? 0) / total >= 0.5;
+    const predictedHit = pred.warm && !pred.idleFlush;
+    if (actualHit === predictedHit) return; // prediction correct — stay quiet
+    const entry = {
+      ts: new Date().toISOString(),
+      session: ctx.sessionManager.getSessionId() ?? "?",
+      predicted: predictedHit ? "hit" : "miss",
+      actual: actualHit ? "hit" : "miss",
+      idleFlushFlag: pred.idleFlush,
+      estTokens: pred.estTokens,
+      cacheRead: u.cacheRead ?? 0,
+      cacheWrite: u.cacheWrite ?? 0,
+      total,
+    };
+    try {
+      mkdirSync(DATA_DIR, { recursive: true });
+      appendFileSync(join(DATA_DIR, "predictions.jsonl"), JSON.stringify(entry) + "\n");
+    } catch {}
+    if (ctx.hasUI) {
+      ctx.ui.notify(
+        predictedHit
+          ? `Cache prediction WRONG: expected hit, got miss (${entry.cacheRead}/${total} cached) — logged.`
+          : `Cache prediction wrong (good news): expected miss, got hit (${entry.cacheRead}/${total} cached) — logged.`,
+        predictedHit ? "warning" : "info",
+      );
+    }
+  };
+
+  pi.on("message_end", async (event, ctx) => {
+    const m = event.message as { role?: string; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } };
+    if (m.role === "assistant" && m.usage && pendingPrediction) recordOutcome(m.usage, ctx);
+  });
 
   const refreshIndicator = () => {
     const ctx = lastCtx;
@@ -146,8 +187,16 @@ export default function (pi: ExtensionAPI) {
     if (!p) return;
     const processIdle = Date.now() - lastProcessActivity;
     const idleFlush = processIdle > IDLE_FLUSH_WARN_MS;
-    if (p.warm && !idleFlush) return; // predicted warm, no flush risk — send freely
-    if (p.estTokens < threshold) return; // cold but cheap — not worth interrupting
+    if (p.warm && !idleFlush) {
+      // predicted warm, no flush risk — send freely, but score the prediction
+      pendingPrediction = { warm: p.warm, idleFlush, estTokens: p.estTokens, ts: new Date().toISOString() };
+      return;
+    }
+    if (p.estTokens < threshold) {
+      // cold but cheap — not worth interrupting; still score it
+      pendingPrediction = { warm: p.warm, idleFlush, estTokens: p.estTokens, ts: new Date().toISOString() };
+      return;
+    }
 
     const reason =
       p.warm && idleFlush
@@ -178,14 +227,21 @@ export default function (pi: ExtensionAPI) {
     ];
     ctx.ui.notify(reason, "warning");
     const choice = await ctx.ui.select("Predicted prompt-cache MISS", options);
-    if (choice === SEND) return; // proceed with normal flow
+    if (choice === SEND) {
+      // user sends into a predicted miss — score it too
+      pendingPrediction = { warm: p.warm, idleFlush, estTokens: p.estTokens, ts: new Date().toISOString() };
+      return; // proceed with normal flow
+    }
 
     if (choice === WARM_SEND && liveWarmBridge.runPing) {
       ctx.ui.notify("Warming (live ping + rewind)…", "info");
+      pendingPrediction = undefined; // don't score the ping's own usage
       const okPing = await liveWarmBridge.runPing();
       if (okPing) {
         // re-send the original message through the normal pipeline; source
-        // will be "extension", so this handler won't re-fire on it
+        // will be "extension", so this handler won't re-fire on it. After a
+        // successful ping the cache should be hot: predict hit and score it.
+        pendingPrediction = { warm: true, idleFlush: false, estTokens: p.estTokens, ts: new Date().toISOString() };
         pi.sendUserMessage(event.text);
         return { handled: true };
       }
