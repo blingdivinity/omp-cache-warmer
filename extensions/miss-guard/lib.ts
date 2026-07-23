@@ -30,7 +30,7 @@ export interface WarmerConfig {
 }
 
 export interface PrefixChange {
-  kind: "diverged" | "unstable" | "pin-refreshed" | "warm-missed";
+  kind: "diverged" | "unstable" | "pin-refreshed" | "warm-missed" | "tools-changed";
   detail: string;
 }
 
@@ -56,6 +56,23 @@ export function loadWarmerConfig(): WarmerConfig {
     return JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as WarmerConfig;
   } catch {
     return {};
+  }
+}
+
+/**
+ * Read the live slot's tool fingerprint from a session's render sidecar
+ * (PINS_DIR/<id>.render.json, written by prefix-pin.ts). Returns undefined when
+ * the sidecar, its live slot, or the fingerprint is absent (older omp) — the
+ * caller then skips the tools-changed check entirely.
+ */
+export function readLiveToolsFp(id: string): string | undefined {
+  try {
+    const sidecar = JSON.parse(readFileSync(join(DATA_DIR, "pins", `${id}.render.json`), "utf8")) as {
+      live?: { toolsFp?: string };
+    };
+    return sidecar.live?.toolsFp;
+  } catch {
+    return undefined;
   }
 }
 

@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, utimesS
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { toolsFingerprint } from "./shared/omp-config";
 
 /**
  * Prefix pinning: freezes a session's rendered system prompt on first use and
@@ -28,6 +29,7 @@ interface RenderSlot {
   ts: string;
   hash: string;
   chars: number;
+  toolsFp?: string;
 }
 
 interface RenderSidecar {
@@ -46,7 +48,7 @@ interface RenderSidecar {
 // OUTSIDE the system prompt (tool schemas / message rendering) — upstream-pin
 // territory an extension cannot fix. This sidecar is exactly what distinguishes
 // the two cases: system-prompt drift (caught free here) vs. everything else.
-function updateRenderSidecar(id: string, warmMode: boolean, effectivePrompt: string[]) {
+function updateRenderSidecar(id: string, warmMode: boolean, effectivePrompt: string[], toolsFp: string | undefined) {
   const hash = createHash("sha256").update(JSON.stringify(effectivePrompt)).digest("hex").slice(0, 16);
   const chars = JSON.stringify(effectivePrompt).length;
   const sidecarPath = join(PINS_DIR, `${id}.render.json`);
@@ -54,17 +56,28 @@ function updateRenderSidecar(id: string, warmMode: boolean, effectivePrompt: str
   try {
     sidecar = JSON.parse(readFileSync(sidecarPath, "utf8")) as RenderSidecar;
   } catch {}
-  if (warmMode && sidecar.live && sidecar.live.hash !== hash) {
-    try {
-      appendFileSync(
-        PREFLIGHT_LOG,
-        `[${new Date().toISOString()}] ${id.slice(0, 8)} pre-flight drift: ` +
-          `warm hash ${hash} != live hash ${sidecar.live.hash} (live ts ${sidecar.live.ts}) — aborting warm, 0 tokens\n`,
-      );
-    } catch {}
-    process.exit(93);
+  if (warmMode && sidecar.live) {
+    const hashMismatch = sidecar.live.hash !== hash;
+    // tool schemas sit ahead of the system prompt in the request, so a changed
+    // tool set is just as fatal to the cached prefix as a changed prompt. Only
+    // compare when BOTH sides carry a fingerprint (older omp → undefined → skip).
+    const toolsMismatch = !!toolsFp && !!sidecar.live.toolsFp && sidecar.live.toolsFp !== toolsFp;
+    if (hashMismatch || toolsMismatch) {
+      const what = hashMismatch ? "system prompt changed" : "tools changed";
+      const detail = hashMismatch
+        ? `warm hash ${hash} != live hash ${sidecar.live.hash}`
+        : `warm toolsFp ${toolsFp} != live toolsFp ${sidecar.live.toolsFp}`;
+      try {
+        appendFileSync(
+          PREFLIGHT_LOG,
+          `[${new Date().toISOString()}] ${id.slice(0, 8)} pre-flight drift (${what}): ` +
+            `${detail} (live ts ${sidecar.live.ts}) — aborting warm, 0 tokens\n`,
+        );
+      } catch {}
+      process.exit(93);
+    }
   }
-  const slot: RenderSlot = { ts: new Date().toISOString(), hash, chars };
+  const slot: RenderSlot = { ts: new Date().toISOString(), hash, chars, toolsFp };
   if (warmMode) sidecar.warm = slot;
   else sidecar.live = slot;
   try {
@@ -97,6 +110,7 @@ export default function (pi: ExtensionAPI) {
     } catch {}
 
     const warmMode = process.env.OMP_CACHE_WARMER_WARM === "1";
+    const toolsFp = toolsFingerprint(ctx);
     if (pin) {
       // replay the frozen prompt byte-for-byte — pins never expire, so every
       // resumed session keeps its original prefix even after the cache went
@@ -106,7 +120,7 @@ export default function (pi: ExtensionAPI) {
         utimesSync(pinPath, t, t); // mark as in-use for the 60-day pruner
       } catch {}
       // may process.exit(93) in warm mode if our replay diverges from live
-      updateRenderSidecar(id, warmMode, pin.systemPrompt);
+      updateRenderSidecar(id, warmMode, pin.systemPrompt, toolsFp);
       return { systemPrompt: pin.systemPrompt };
     }
     // first turn of this session: capture the rendered prompt as the pin
@@ -116,7 +130,7 @@ export default function (pi: ExtensionAPI) {
       JSON.stringify({ createdAt: new Date().toISOString(), systemPrompt: event.systemPrompt } satisfies Pin, null, 2),
     );
     // may process.exit(93) in warm mode if this fresh capture diverges from live
-    updateRenderSidecar(id, warmMode, event.systemPrompt);
+    updateRenderSidecar(id, warmMode, event.systemPrompt, toolsFp);
   });
 
   pi.registerCommand("pin-status", {

@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { PrefixChange } from "./lib";
 import { liveWarmBridge } from "../shared/bridge";
-import { ompIdleFlushDisabled } from "../shared/omp-config";
-import { IDLE_FLUSH_WARN_MS, OMP_IDLE_FLUSH_MS, PING_SAFE_IDLE_MS, loadWarmerConfig, predict } from "./lib";
+import { ompIdleFlushDisabled, toolsFingerprint } from "../shared/omp-config";
+import { IDLE_FLUSH_WARN_MS, OMP_IDLE_FLUSH_MS, PING_SAFE_IDLE_MS, loadWarmerConfig, predict, readLiveToolsFp } from "./lib";
 import { describeChangedPart } from "./diff";
 import { createScorer } from "./score";
 
@@ -21,6 +22,27 @@ export default function (pi: ExtensionAPI) {
   let lastProcessActivity = Date.now();
   const scorer = createScorer(pi);
 
+  // The tool set + omp version form the one prefix component prefix-pin.ts
+  // cannot freeze. predict() has no clean tool access, so we detect drift here:
+  // when the prediction shows no other prefix change, compare the live ctx's
+  // fingerprint against the one prefix-pin stored in the render sidecar. Both
+  // present and different ⇒ the cached prefix cannot match. Cheap (one small
+  // JSON read), safe to run at the 30s indicator cadence.
+  const flagToolsChange = (ctx: ExtensionContext, p: { prefixChanged?: { kind: PrefixChange["kind"]; detail: string } }) => {
+    if (p.prefixChanged) return;
+    const id = ctx.sessionManager.getSessionId();
+    if (!id) return;
+    const current = toolsFingerprint(ctx);
+    const stored = readLiveToolsFp(id);
+    if (current && stored && current !== stored) {
+      p.prefixChanged = {
+        kind: "tools-changed",
+        detail:
+          "active tool set changed since the last request (omp upgrade / extension change / tool toggle) — the cached prefix cannot match",
+      };
+    }
+  };
+
   const refreshIndicator = () => {
     const ctx = lastCtx;
     if (!ctx?.hasUI) return;
@@ -29,6 +51,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("cache-warmth", undefined);
       return;
     }
+    flagToolsChange(ctx, p);
     const idleFlush = !ompIdleFlushDisabled() && Date.now() - lastProcessActivity > IDLE_FLUSH_WARN_MS;
     if (p.warm && !idleFlush) {
       const min = Math.max(1, Math.round(p.deltaMs / 60_000));
@@ -68,6 +91,7 @@ export default function (pi: ExtensionAPI) {
 
     const p = predict(ctx, cfg);
     if (!p) return;
+    flagToolsChange(ctx, p);
     const processIdle = Date.now() - lastProcessActivity;
     const idleFlush = !ompIdleFlushDisabled() && processIdle > IDLE_FLUSH_WARN_MS;
     // effective prediction: a known prefix change means a miss even on a warm cache
@@ -89,6 +113,7 @@ export default function (pi: ExtensionAPI) {
       unstable: `WHY: prefix changes every render (churning prompt content) — warming auto-disabled; every send re-reads.`,
       "pin-refreshed": `WHY: prompt pin re-captured after last warm — one-time miss, then warming resumes.`,
       "warm-missed": `WHY: the warmer's last ping itself missed and re-primed a NEW rendering — this live session's bytes likely differ; expect a full re-read. Fix: send (re-primes live prefix) or /livewarm-ping.`,
+      "tools-changed": `WHY: the active tool schemas changed (omp upgrade / extension change / tool toggle). Tool definitions precede everything else in the prompt, so the WHOLE prefix re-reads — a one-time miss. Next turn re-primes the new prefix. Fix: just send.`,
     };
     const changedPart = p.prefixChanged
       ? describeChangedPart(ctx.sessionManager.getSessionId() ?? "", ctx.getSystemPrompt(), p.prefixChanged.kind)
