@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@o
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { liveWarmBridge } from "./livewarm-shared";
 
 /**
  * Live self-warming: keeps an OPEN omp session's cache warm from inside the
@@ -151,7 +152,7 @@ export default function (pi: ExtensionAPI) {
     if (!cmdCtx) {
       const candidate = ctx as Partial<ExtensionCommandContext>;
       if (typeof candidate.navigateTree === "function" && typeof candidate.waitForIdle === "function") {
-        cmdCtx = ctx as ExtensionCommandContext;
+        armBridge(ctx as ExtensionCommandContext);
         logLine("auto-armed from event context (runtime exposes command surface)");
       }
     }
@@ -161,10 +162,24 @@ export default function (pi: ExtensionAPI) {
   pi.on("turn_end", onActivity);
 
   // ---- commands ----
+  const armBridge = (ctx: ExtensionCommandContext) => {
+    cmdCtx = ctx;
+    liveWarmBridge.runPing = async () => {
+      if (!cmdCtx) return false;
+      try {
+        await runCycle(cmdCtx, "miss-guard");
+        return true;
+      } catch (e) {
+        logLine(`bridge ping failed: ${e}`);
+        return false;
+      }
+    };
+  };
+
   pi.registerCommand("livewarm-on", {
     description: "Arm live self-warming for this session (requires \"liveWarm\": true in config)",
     handler: async (_args, ctx) => {
-      cmdCtx = ctx;
+      armBridge(ctx);
       ensureTimer(ctx);
       lastActivity = Date.now();
       const cfg = loadCfg();
@@ -182,7 +197,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("livewarm-ping", {
     description: "One live self-warm cycle now: ping through the real pipeline, then rewind",
     handler: async (_args, ctx) => {
-      cmdCtx = ctx;
+      armBridge(ctx);
+      ensureTimer(ctx);
       await runCycle(ctx, "manual");
     },
   });

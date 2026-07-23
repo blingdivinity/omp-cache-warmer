@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { liveWarmBridge } from "./livewarm-shared";
 
 /**
  * Miss guard: predicts the prompt-cache state for this session with the same
@@ -155,15 +156,40 @@ export default function (pi: ExtensionAPI) {
           `so omp will rewrite the sent history and miss the warm cache anyway. ` +
           `Restarting the session (omp -c) re-renders from the file and WILL hit the warmed prefix.`
         : `This session has been idle ~${p.idleMin}m — its ${p.provider} cache entry has likely expired.`;
-    const ok = await ctx.ui.confirm(
-      "Predicted prompt-cache MISS",
-      `${reason}\n\nSending now will re-read ~${p.estTokens.toLocaleString()} tokens uncached (then re-prime).\n\nSend anyway?`,
-    );
-    if (ok) return; // proceed with normal flow
-    // The runtime clears the editor draft AFTER a handler returns handled:true
-    // (dist: `if (K?.handled) { this.ctx.editor.clearDraft(); return }`), so a
-    // synchronous setEditorText here gets wiped. Defer the restore one tick
-    // past the clear via the managed timer.
+    const canLiveWarm = typeof liveWarmBridge.runPing === "function";
+    const SEND = "Send now";
+    const WARM_SEND = "Warm first, then send";
+    const KEEP = "Don't send (keep message)";
+    const options = [
+      ...(canLiveWarm
+        ? [{ label: WARM_SEND, description: "run a live-warm ping+rewind, then send — session stays armed and hot" }]
+        : []),
+      { label: SEND, description: `pay the ~${p.estTokens.toLocaleString()}-token re-read now (re-primes the cache)` },
+      {
+        label: KEEP,
+        description: canLiveWarm ? "message stays in the editor" : "message stays in the editor — tip: /livewarm-on prevents this",
+      },
+    ];
+    ctx.ui.notify(reason, "warning");
+    const choice = await ctx.ui.select("Predicted prompt-cache MISS", options);
+    if (choice === SEND) return; // proceed with normal flow
+
+    if (choice === WARM_SEND && liveWarmBridge.runPing) {
+      ctx.ui.notify("Warming (live ping + rewind)…", "info");
+      const okPing = await liveWarmBridge.runPing();
+      if (okPing) {
+        // re-send the original message through the normal pipeline; source
+        // will be "extension", so this handler won't re-fire on it
+        pi.sendUserMessage(event.text);
+        return { handled: true };
+      }
+      ctx.ui.notify("Live-warm failed — message kept in editor.", "warning");
+    }
+
+    // KEEP (or cancel/failure): the runtime clears the editor draft AFTER a
+    // handler returns handled:true (dist: `if (K?.handled) {
+    // this.ctx.editor.clearDraft(); return }`), so a synchronous setEditorText
+    // gets wiped. Defer the restore past the clear via the managed timer.
     ctx.setTimeout(() => {
       ctx.ui.setEditorText(event.text);
     }, 50);
