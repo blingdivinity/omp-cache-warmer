@@ -79,6 +79,20 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", onActivity);
   pi.on("turn_end", onActivity);
 
+  // resumed/opened sessions should show warmth immediately, before any turn.
+  // Unlike onActivity this does NOT bump lastProcessActivity: opening a session
+  // is not a paid request, so it must not mask the idle-flush clock.
+  const onSessionVisible = async (_event: unknown, ctx: ExtensionContext) => {
+    lastCtx = ctx;
+    if (!timerStarted) {
+      timerStarted = true;
+      ctx.setInterval(refreshIndicator, 30_000);
+    }
+    refreshIndicator();
+  };
+  pi.on("session_start", onSessionVisible);
+  pi.on("session_switch", onSessionVisible);
+
   pi.on("input", async (event, ctx) => {
     lastCtx = ctx;
     if (event.source !== "interactive" || !ctx.hasUI) return;
