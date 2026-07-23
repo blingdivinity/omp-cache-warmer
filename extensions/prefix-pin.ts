@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, utimesSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -89,7 +89,10 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       const id = ctx.sessionManager.getSessionId();
       if (!id) return;
-      rmSync(join(PINS_DIR, `${id}.json`), { force: true });
+      // archive instead of delete so miss-guard can diff old vs new prompt
+      try {
+        renameSync(join(PINS_DIR, `${id}.json`), join(PINS_DIR, `${id}.prev.json`));
+      } catch {}
       if (ctx.hasUI) ctx.ui.notify("Pin dropped — next turn captures and pins the current prompt.", "info");
     },
   });

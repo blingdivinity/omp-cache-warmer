@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { liveWarmBridge } from "../shared/bridge";
 import { IDLE_FLUSH_WARN_MS, OMP_IDLE_FLUSH_MS, PING_SAFE_IDLE_MS, loadWarmerConfig, predict } from "./lib";
+import { describeChangedPart } from "./diff";
 import { createScorer } from "./score";
 
 /**
@@ -68,19 +69,41 @@ export default function (pi: ExtensionAPI) {
     if (!p) return;
     const processIdle = Date.now() - lastProcessActivity;
     const idleFlush = processIdle > IDLE_FLUSH_WARN_MS;
-    const stampNow = () => scorer.stamp({ warm: p.warm, idleFlush, estTokens: p.estTokens, ts: new Date().toISOString() });
-    if (p.warm && !idleFlush) {
-      stampNow(); // predicted warm, no flush risk — send freely, but score it
+    // effective prediction: a known prefix change means a miss even on a warm cache
+    const predictedHit = p.warm && !idleFlush && !p.prefixChanged;
+    const stampNow = () =>
+      scorer.stamp({ warm: p.warm && !p.prefixChanged, idleFlush, estTokens: p.estTokens, ts: new Date().toISOString() });
+    if (predictedHit) {
+      stampNow(); // predicted warm, no flush risk, prefix aligned — send freely, but score it
       return;
     }
     if (p.estTokens < threshold) {
-      stampNow(); // cold but cheap — not worth interrupting; still score it
+      stampNow(); // predicted miss but cheap — not worth interrupting; still score it
       return;
     }
 
     const touchAgo = p.lastTouchAt.toLocaleTimeString();
-    const reason =
-      p.warm && idleFlush
+    const PREFIX_WHY: Record<string, string> = {
+      diverged:
+        `WHY: the request PREFIX CHANGED while the session file did not — the warmer's last ping proved the cache ` +
+        `holds an OLD rendering (this process, or an omp/extension update, rewrote the prompt/history). Your message ` +
+        `sends the NEW rendering → miss regardless of cache warmth. /compact or a restart (omp -c) plus ` +
+        `\`omp-cache-warmer warm <id>\` re-aligns the lineages.`,
+      unstable:
+        `WHY: the request PREFIX CHANGES on every render — the daemon saw two consecutive warms mismatch and ` +
+        `auto-disabled warming (something injects churning content into the prompt: timestamps, directory tree, an ` +
+        `extension). Until that source is pinned or removed, EVERY send re-reads the full prefix.`,
+      "pin-refreshed":
+        `WHY: this session's prompt pin was RE-CAPTURED after the cache was last warmed — the warm cache holds the ` +
+        `old pinned prompt, your message sends the new one → one-time miss, then the fresh prefix re-primes and ` +
+        `warming continues normally.`,
+    };
+    const changedPart = p.prefixChanged
+      ? describeChangedPart(ctx.sessionManager.getSessionId() ?? "", ctx.getSystemPrompt(), p.prefixChanged.kind)
+      : undefined;
+    const reason = p.prefixChanged
+      ? `${PREFIX_WHY[p.prefixChanged.kind]}\n\nWHAT CHANGED: ${changedPart}`
+      : p.warm && idleFlush
         ? `WHY: the provider cache is actually WARM (last refreshed ${touchAgo} by ${p.touchSource}) — but THIS ` +
           `omp process has been idle ~${Math.round(processIdle / 60_000)}m, past omp's ` +
           `${Math.round(OMP_IDLE_FLUSH_MS / 60_000)}m idle-flush. On your next message omp rewrites the sent ` +
@@ -94,7 +117,7 @@ export default function (pi: ExtensionAPI) {
     // must still be warm AND this process must not have crossed omp's 90m
     // idle-flush line. Past either point, a ping pays the exact same full miss
     // the user's message would — offering to "warm" would be a lie.
-    const pingWouldHit = p.warm && processIdle < PING_SAFE_IDLE_MS;
+    const pingWouldHit = p.warm && processIdle < PING_SAFE_IDLE_MS && !p.prefixChanged;
     const canLiveWarm = typeof liveWarmBridge.runPing === "function" && pingWouldHit;
     const SEND = "Send now";
     const WARM_SEND = "Warm first, then send";

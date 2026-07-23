@@ -29,6 +29,11 @@ export interface WarmerConfig {
   coldReprime?: "always" | "never" | number;
 }
 
+export interface PrefixChange {
+  kind: "diverged" | "unstable" | "pin-refreshed";
+  detail: string;
+}
+
 export interface Prediction {
   warm: boolean;
   /** ms until predicted expiry (warm) or since expiry (cold) */
@@ -41,6 +46,8 @@ export interface Prediction {
   lastTouchAt: Date;
   /** what refreshed it: the warmer daemon's ping or the session's own request */
   touchSource: "warmer ping" | "session activity";
+  /** set when the request prefix is known to differ from the cached one */
+  prefixChanged?: PrefixChange;
   provider: string;
 }
 
@@ -64,18 +71,36 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
   let lastTouch = 0;
   let touchSource: "warmer ping" | "session activity" = "session activity";
   let estTokens = 0;
+  let lastWarmMs = 0;
+  let prefixChanged: PrefixChange | undefined;
   try {
     const state = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Record<
       string,
-      { lastWarmAt?: string; lastInputTokens?: number }
+      { lastWarmAt?: string; lastInputTokens?: number; disabled?: string }
     >;
     const st = state[id];
     if (st?.lastWarmAt) {
-      lastTouch = Date.parse(st.lastWarmAt);
+      lastWarmMs = Date.parse(st.lastWarmAt);
+      lastTouch = lastWarmMs;
       touchSource = "warmer ping";
     }
     if (st?.lastInputTokens) estTokens = st.lastInputTokens;
+    // the daemon already proved the prefix changed for this session
+    if (st?.disabled?.startsWith("lineage divergence")) prefixChanged = { kind: "diverged", detail: st.disabled };
+    else if (st?.disabled?.startsWith("prefix unstable")) prefixChanged = { kind: "unstable", detail: st.disabled };
   } catch {}
+  // a pin refreshed after the last warm means the cache holds the OLD prompt
+  if (!prefixChanged && lastWarmMs > 0) {
+    try {
+      const pinStat = statSync(join(DATA_DIR, "pins", `${id}.json`));
+      if (pinStat.birthtimeMs > lastWarmMs) {
+        prefixChanged = {
+          kind: "pin-refreshed",
+          detail: `prompt pin re-captured ${new Date(pinStat.birthtimeMs).toLocaleTimeString()}, after the last warm`,
+        };
+      }
+    } catch {}
+  }
   if (file) {
     try {
       const fst = statSync(file);
@@ -98,6 +123,7 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
     aliveMin: Math.round(aliveMs / 60_000),
     lastTouchAt: new Date(lastTouch),
     touchSource,
+    prefixChanged,
     provider,
   };
 }
