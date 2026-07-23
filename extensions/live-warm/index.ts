@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { IDLE_FLUSH_CUTOFF_MS, loadCfg, logLine, markWarmInSharedState, type UsageShape } from "./lib";
+import { statSync } from "node:fs";
+import { IDLE_FLUSH_CUTOFF_MS, intervalMsFor, loadCfg, logLine, markWarmInSharedState, type UsageShape } from "./lib";
 import { liveWarmBridge } from "../shared/bridge";
 
 /**
@@ -78,9 +79,7 @@ export default function (pi: ExtensionAPI) {
       void (async () => {
         const cfg = loadCfg();
         if (cfg.liveWarm !== true || !cmdCtx) return;
-        const provider = cmdCtx.model?.provider;
-        const intervalMs =
-          (cfg.liveWarmIntervalMinutes ?? cfg.intervals?.[provider ?? ""] ?? cfg.defaultIntervalMinutes ?? 55) * 60_000;
+        const intervalMs = intervalMsFor(cfg, cmdCtx.model?.provider);
         const idle = Date.now() - lastActivity;
         if (idle < intervalMs) return; // recently active — cache warm on its own
         if (idle > IDLE_FLUSH_CUTOFF_MS) {
@@ -129,12 +128,53 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       armBridge(ctx);
       ensureTimer(ctx);
-      lastActivity = Date.now();
       const cfg = loadCfg();
+      // Derive REAL last activity from the session file's mtime — arming must
+      // not fake a fresh idle clock, or the first ping lands after cache expiry.
+      let derived = Date.now();
+      try {
+        const file = ctx.sessionManager.getSessionFile?.();
+        if (file) derived = statSync(file).mtimeMs;
+      } catch {
+        derived = Date.now();
+      }
+      lastActivity = derived;
+
+      const intervalMs = intervalMsFor(cfg, ctx.model?.provider);
+      const idle = Date.now() - lastActivity;
+      const idleMin = Math.round(idle / 60_000);
+      let armPinged = false;
+
+      if (cfg.liveWarm === true && idle >= intervalMs && idle <= IDLE_FLUSH_CUTOFF_MS) {
+        armPinged = true;
+        void runCycle(ctx, "arm")
+          .then(() => {
+            lastActivity = Date.now();
+          })
+          .catch((e) => {
+            logLine(`[arm] immediate arm-ping failed: ${e}`);
+          });
+      } else if (cfg.liveWarm === true && idle > IDLE_FLUSH_CUTOFF_MS) {
+        logLine(`[arm] armed too late: idle ${idleMin}m past flush cutoff — no safe ping possible`);
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            `Live-warm armed, but this session has been idle ${idleMin}m — past the safe window. ` +
+              "The next real send will likely miss cache. Send a cheap message now (or `omp -c`) to reprime.",
+            "warning",
+          );
+        }
+      }
+
+      logLine(
+        `[arm] armed: idle=${idleMin}m intervalMs=${intervalMs} liveWarm=${cfg.liveWarm === true} armPing=${armPinged}`,
+      );
+
       if (ctx.hasUI) {
         ctx.ui.notify(
           cfg.liveWarm === true
-            ? "Live self-warming armed: idle pings on the provider interval, auto-rewound."
+            ? armPinged
+              ? "Live self-warming armed: session was stale — pinging now, then idle pings on the provider interval."
+              : "Live self-warming armed: idle pings on the provider interval, auto-rewound."
             : 'Context armed, but "liveWarm" is not true in config — auto-pings stay off.',
           cfg.liveWarm === true ? "info" : "warning",
         );

@@ -42,6 +42,13 @@ export function loadCfg(): LiveWarmConfig {
   }
 }
 
+/** Interval the auto-ping timer uses; shared so the timer and arm path can't drift. */
+export function intervalMsFor(cfg: LiveWarmConfig, provider: string | undefined): number {
+  return (
+    (cfg.liveWarmIntervalMinutes ?? cfg.intervals?.[provider ?? ""] ?? cfg.defaultIntervalMinutes ?? 55) * 60_000
+  );
+}
+
 /** Let the daemon know this lineage was just warmed so it backs off. */
 export function markWarmInSharedState(ctx: ExtensionContext) {
   const id = ctx.sessionManager.getSessionId();
