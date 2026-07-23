@@ -156,13 +156,19 @@ export default function (pi: ExtensionAPI) {
           `so omp will rewrite the sent history and miss the warm cache anyway. ` +
           `Restarting the session (omp -c) re-renders from the file and WILL hit the warmed prefix.`
         : `This session has been idle ~${p.idleMin}m — its ${p.provider} cache entry has likely expired.`;
-    const canLiveWarm = typeof liveWarmBridge.runPing === "function";
+    // "Warm first" is only offered when the ping itself would HIT: the cache
+    // must still be warm AND this process must not have crossed omp's 90m
+    // idle-flush line (use live-warm's 88m safety cutoff). Past either point,
+    // a ping pays the exact same full miss the user's message would — offering
+    // to "warm" would be a lie.
+    const pingWouldHit = p.warm && processIdle < 88 * 60_000;
+    const canLiveWarm = typeof liveWarmBridge.runPing === "function" && pingWouldHit;
     const SEND = "Send now";
     const WARM_SEND = "Warm first, then send";
     const KEEP = "Don't send (keep message)";
     const options = [
       ...(canLiveWarm
-        ? [{ label: WARM_SEND, description: "run a live-warm ping+rewind, then send — session stays armed and hot" }]
+        ? [{ label: WARM_SEND, description: "cache is still warm: ping hits, resets the idle-flush clock, then your message sends hot" }]
         : []),
       { label: SEND, description: `pay the ~${p.estTokens.toLocaleString()}-token re-read now (re-primes the cache)` },
       {
