@@ -1,7 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { IDLE_FLUSH_CUTOFF_MS, loadCfg, logLine, markWarmInSharedState, type UsageShape } from "./live-warm-lib";
 import { liveWarmBridge } from "./livewarm-shared";
 
 /**
@@ -11,50 +9,12 @@ import { liveWarmBridge } from "./livewarm-shared";
  * Why: the external daemon warms the file-resume rendering; a live process
  * that idles past omp's prune idle-flush (90m) rewrites its own rendering and
  * misses anyway. A ping sent through the live pipeline + a session-tree
- * rewind (validated: post-rewind real message ~99% cached) fixes exactly that,
- * and resets the idle-flush clock as a side effect.
+ * rewind (validated: post-rewind real message ~99% cached) fixes exactly
+ * that, and resets the idle-flush clock as a side effect.
  *
- * Enable with `"liveWarm": true` in the shared config. The cycle needs a
- * command context (navigateTree/waitForIdle); one is stashed from any of our
- * command invocations — run /livewarm-on (or any ping) once per session.
+ * Enable with `"liveWarm": true` in the shared config; arm each session with
+ * /livewarm-on (the cycle needs a command context for navigateTree).
  */
-
-const DATA_DIR = join(homedir(), ".omp", "agent", "omp-cache-warmer");
-const CONFIG_PATH = join(DATA_DIR, "config.json");
-const STATE_PATH = join(DATA_DIR, "state.json");
-const LOG = join(DATA_DIR, "live-warm.log");
-
-/** stop pinging before omp's PRUNE_IDLE_FLUSH_MS (90m): a ping after that would trigger the flush */
-const IDLE_FLUSH_CUTOFF_MS = 88 * 60_000;
-
-function logLine(msg: string) {
-  try {
-    mkdirSync(DATA_DIR, { recursive: true });
-    appendFileSync(LOG, `[${new Date().toISOString()}] ${msg}\n`);
-  } catch {}
-}
-
-interface LiveWarmConfig {
-  message?: string;
-  liveWarm?: boolean;
-  intervals?: Record<string, number>;
-  defaultIntervalMinutes?: number;
-  liveWarmIntervalMinutes?: number;
-}
-
-function loadCfg(): LiveWarmConfig {
-  try {
-    return JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as LiveWarmConfig;
-  } catch {
-    return {};
-  }
-}
-
-interface UsageShape {
-  input?: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-}
 
 export default function (pi: ExtensionAPI) {
   let lastAssistantUsage: UsageShape | undefined;
@@ -62,16 +22,10 @@ export default function (pi: ExtensionAPI) {
   let lastActivity = Date.now();
   let cycling = false;
 
-  const markWarmInSharedState = (ctx: ExtensionContext) => {
-    // let the daemon know this lineage was just warmed so it backs off
-    const id = ctx.sessionManager.getSessionId();
-    if (!id) return;
-    try {
-      const state = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Record<string, { lastWarmAt?: string; misses?: number }>;
-      state[id] = { ...(state[id] ?? { misses: 0 }), lastWarmAt: new Date().toISOString() };
-      writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
-    } catch {}
-  };
+  pi.on("message_end", async (event) => {
+    const m = event.message as { role?: string; usage?: UsageShape };
+    if (m.role === "assistant" && m.usage) lastAssistantUsage = m.usage;
+  });
 
   const runCycle = async (ctx: ExtensionCommandContext, tag: string): Promise<void> => {
     if (cycling) return;
@@ -116,34 +70,43 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // ---- events: usage capture, activity clock, timer ----
-  pi.on("message_end", async (event) => {
-    const m = event.message as { role?: string; usage?: UsageShape };
-    if (m.role === "assistant" && m.usage) lastAssistantUsage = m.usage;
-  });
-
   let timerStarted = false;
   const ensureTimer = (ctx: ExtensionContext) => {
     if (timerStarted) return;
     timerStarted = true;
     ctx.setInterval(() => {
-        void (async () => {
-          const cfg = loadCfg();
-          if (cfg.liveWarm !== true || !cmdCtx) return;
-          const provider = cmdCtx.model?.provider;
-          const intervalMs =
-            (cfg.liveWarmIntervalMinutes ?? cfg.intervals?.[provider ?? ""] ?? cfg.defaultIntervalMinutes ?? 55) * 60_000;
-          const idle = Date.now() - lastActivity;
-          if (idle < intervalMs) return; // recently active — cache warm on its own
-          if (idle > IDLE_FLUSH_CUTOFF_MS) {
-            logLine(`skipping auto-ping: idle ${Math.round(idle / 60_000)}m past flush cutoff (would trigger the flush)`);
-            return;
-          }
-          await runCycle(cmdCtx, "auto");
-          lastActivity = Date.now();
+      void (async () => {
+        const cfg = loadCfg();
+        if (cfg.liveWarm !== true || !cmdCtx) return;
+        const provider = cmdCtx.model?.provider;
+        const intervalMs =
+          (cfg.liveWarmIntervalMinutes ?? cfg.intervals?.[provider ?? ""] ?? cfg.defaultIntervalMinutes ?? 55) * 60_000;
+        const idle = Date.now() - lastActivity;
+        if (idle < intervalMs) return; // recently active — cache warm on its own
+        if (idle > IDLE_FLUSH_CUTOFF_MS) {
+          logLine(`skipping auto-ping: idle ${Math.round(idle / 60_000)}m past flush cutoff (would trigger the flush)`);
+          return;
+        }
+        await runCycle(cmdCtx, "auto");
+        lastActivity = Date.now();
       })();
     }, 60_000);
   };
+
+  const armBridge = (ctx: ExtensionCommandContext) => {
+    cmdCtx = ctx;
+    liveWarmBridge.runPing = async () => {
+      if (!cmdCtx) return false;
+      try {
+        await runCycle(cmdCtx, "miss-guard");
+        return true;
+      } catch (e) {
+        logLine(`bridge ping failed: ${e}`);
+        return false;
+      }
+    };
+  };
+
   const onActivity = async (_event: unknown, ctx: ExtensionContext) => {
     if (!cycling) lastActivity = Date.now();
     ensureTimer(ctx);
@@ -161,23 +124,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", onActivity);
   pi.on("turn_end", onActivity);
 
-  // ---- commands ----
-  const armBridge = (ctx: ExtensionCommandContext) => {
-    cmdCtx = ctx;
-    liveWarmBridge.runPing = async () => {
-      if (!cmdCtx) return false;
-      try {
-        await runCycle(cmdCtx, "miss-guard");
-        return true;
-      } catch (e) {
-        logLine(`bridge ping failed: ${e}`);
-        return false;
-      }
-    };
-  };
-
   pi.registerCommand("livewarm-on", {
-    description: "Arm live self-warming for this session (requires \"liveWarm\": true in config)",
+    description: 'Arm live self-warming for this session (requires "liveWarm": true in config)',
     handler: async (_args, ctx) => {
       armBridge(ctx);
       ensureTimer(ctx);
