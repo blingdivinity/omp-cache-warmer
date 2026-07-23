@@ -30,7 +30,7 @@ export interface WarmerConfig {
 }
 
 export interface PrefixChange {
-  kind: "diverged" | "unstable" | "pin-refreshed";
+  kind: "diverged" | "unstable" | "pin-refreshed" | "warm-missed";
   detail: string;
 }
 
@@ -103,10 +103,11 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
   let estTokens = 0;
   let lastWarmMs = 0;
   let prefixChanged: PrefixChange | undefined;
+  let lastCacheRead: number | undefined;
   try {
     const state = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Record<
       string,
-      { lastWarmAt?: string; lastInputTokens?: number; disabled?: string }
+      { lastWarmAt?: string; lastInputTokens?: number; lastCacheRead?: number; disabled?: string }
     >;
     const st = state[id];
     if (st?.lastWarmAt) {
@@ -115,6 +116,7 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
       touchSource = "warmer ping";
     }
     if (st?.lastInputTokens) estTokens = st.lastInputTokens;
+    if (typeof st?.lastCacheRead === "number") lastCacheRead = st.lastCacheRead;
     // the daemon already proved the prefix changed for this session
     if (st?.disabled?.startsWith("lineage divergence")) prefixChanged = { kind: "diverged", detail: st.disabled };
     else if (st?.disabled?.startsWith("prefix unstable")) prefixChanged = { kind: "unstable", detail: st.disabled };
@@ -149,6 +151,19 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
   // wrote the cache more recently, the cached prefix IS the live rendering —
   // whatever the daemon observed hours ago no longer applies.
   if (prefixChanged && touchSource === "session activity") prefixChanged = undefined;
+  // Warm-missed guard: if the daemon's own last warm MISSED (lastCacheRead 0 =
+  // full re-read + rewrite from a drift/cold re-prime) AND that warm is still
+  // the newest touch (the session file did NOT supersede it above, so
+  // touchSource is still "warmer ping"), the cache holds the daemon's fresh
+  // rendering — unproven for this live session's bytes. Runs after the
+  // file-mtime comparison: any session activity after the warm re-cached the
+  // live prefix and must NOT trip this flag.
+  if (!prefixChanged && touchSource === "warmer ping" && lastCacheRead === 0) {
+    prefixChanged = {
+      kind: "warm-missed",
+      detail: "last daemon warm MISSED (drift/re-prime): cache holds the daemon's fresh rendering, unproven for this live session",
+    };
+  }
   if (lastTouch === 0) return; // brand-new session: nothing cached yet
 
   const aliveMs = intervalMs + 10 * 60_000;

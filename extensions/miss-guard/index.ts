@@ -87,6 +87,7 @@ export default function (pi: ExtensionAPI) {
       diverged: `WHY: prefix changed (cache holds an old rendering). Fix: /compact or omp -c, then omp-cache-warmer warm <id>.`,
       unstable: `WHY: prefix changes every render (churning prompt content) — warming auto-disabled; every send re-reads.`,
       "pin-refreshed": `WHY: prompt pin re-captured after last warm — one-time miss, then warming resumes.`,
+      "warm-missed": `WHY: the warmer's last ping itself missed and re-primed a NEW rendering — this live session's bytes likely differ; expect a full re-read. Fix: send (re-primes live prefix) or /livewarm-ping.`,
     };
     const changedPart = p.prefixChanged
       ? describeChangedPart(ctx.sessionManager.getSessionId() ?? "", ctx.getSystemPrompt(), p.prefixChanged.kind)
