@@ -10,8 +10,10 @@ export interface SessionState {
   lastCacheWrite?: number;
   /** consecutive expected-hit misses (prefix changed between warms) */
   misses: number;
-  /** lifetime count of detected prefix drifts (each cost one cache write) */
+  /** count of full-miss drifts within a rolling 24h window (see classifyDrift) */
   driftEvents?: number;
+  /** ISO timestamp of the most recent counted drift (windows driftEvents) */
+  lastDriftAt?: string;
   disabled?: string; // reason
   /** omp version at last warm — a change explains one systemic drift */
   ompVersion?: string;

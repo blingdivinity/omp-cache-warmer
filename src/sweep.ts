@@ -48,7 +48,12 @@ function classifyDrift(s: SessionInfo, st: SessionState, res: WarmResult, prevWa
     return;
   }
   st.misses++;
-  st.driftEvents = (st.driftEvents ?? 0) + 1;
+  // driftEvents is a 24h-windowed counter: a drift older than 24h (or none) starts
+  // a fresh window, otherwise it accumulates. misses stays the consecutive-warm gauge.
+  const prevDriftAt = st.lastDriftAt ? Date.parse(st.lastDriftAt) : 0;
+  const withinWindow = prevDriftAt > 0 && Date.now() - prevDriftAt < 24 * 60 * 60 * 1000;
+  st.driftEvents = withinWindow ? (st.driftEvents ?? 0) + 1 : 1;
+  st.lastDriftAt = new Date().toISOString();
   log(
     `  prefix DRIFT${fileUnchanged ? " (file unchanged — lineage divergence)" : ""}: ` +
       `expected hit, got ${res.cacheRead}/${res.input} cached ` +
@@ -64,6 +69,12 @@ function classifyDrift(s: SessionInfo, st: SessionState, res: WarmResult, prevWa
     st.disabled =
       "prefix unstable: changed between consecutive warms twice — warming is futile " +
       "(a real resume would miss too); likely dynamic system prompt content (date, dir tree, extensions)";
+    log(`  disabled ${s.id.slice(0, 8)}: ${st.disabled}`);
+  } else if ((st.driftEvents ?? 0) >= 3) {
+    st.disabled =
+      "chronic drift: 3 full-miss warms within 24h despite interleaved self-hits — " +
+      "the daemon's rendering diverges from this session's; warming paused (live-warm covers open sessions). " +
+      `Force with: omp-cache-warmer warm ${s.id.slice(0, 8)}`;
     log(`  disabled ${s.id.slice(0, 8)}: ${st.disabled}`);
   }
 }
@@ -98,7 +109,26 @@ export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise
     // No provider offers a free "does this cache exist" probe — status only
     // arrives in the usage of a paid request — so we predict from TTL math.
     const lastTouch = Math.max(st.lastWarmAt ? Date.parse(st.lastWarmAt) : 0, s.mtime.getTime());
-    const expectHit = now - lastTouch < interval + 10 * 60_000;
+    let expectHit = now - lastTouch < interval + 10 * 60_000;
+
+    // drift re-prime loop: last warm was a full miss (lastCacheRead 0) and the
+    // session file has new live activity since. The live session owns the cache
+    // now; our resume rendering already proved divergent, so re-warming would
+    // repeat the same full-price miss. Gate it like a cold re-prime.
+    if (!forced && st.lastCacheRead === 0 && st.lastWarmAt && s.mtime.getTime() > Date.parse(st.lastWarmAt)) {
+      const estTokens = st.lastInputTokens ?? Math.round(statSync(s.file).size / 4);
+      if (cfg.coldReprime === "never" || (cfg.coldReprime !== "always" && estTokens > cfg.coldReprime)) {
+        st.disabled =
+          `drift re-prime loop: last warm missed fully and the session has new live activity — ` +
+          `re-warming would pay ~${estTokens} tokens again for a rendering the live session doesn't use. ` +
+          `Re-aligns on a fresh resume/compact; force with: omp-cache-warmer warm ${s.id.slice(0, 8)}`;
+        log(`skipping ${s.id.slice(0, 8)}: ${st.disabled}`);
+        continue;
+      }
+      // proceeding under coldReprime "always"/under-threshold: this is a known
+      // re-prime, not a surprise drift — don't let a full miss count as drift.
+      expectHit = false;
+    }
 
     if (!expectHit && !forced && cfg.coldReprime !== "always") {
       // estimate prefix size: exact from the last warm, else ~chars/4
@@ -142,7 +172,9 @@ export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise
     }
     if (outcome === "hit") {
       st.misses = 0;
-      if (st.disabled?.startsWith("cache predicted expired")) delete st.disabled;
+      // a HIT proves the rendering re-aligned: clear the expiry gate always,
+      // and any drift/divergence disable when the user explicitly forced.
+      if (st.disabled && (forced || st.disabled.startsWith("cache predicted expired"))) delete st.disabled;
       log(`  cache HIT ${((res.cacheRead / res.input) * 100).toFixed(1)}% (${res.cacheRead}/${res.input} tokens)`);
     } else if (outcome === "drift") {
       classifyDrift(s, st, res, prevWarmAt, upgraded);
