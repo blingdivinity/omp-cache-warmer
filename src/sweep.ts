@@ -126,17 +126,21 @@ export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise
       if (warmed >= cfg.maxWarmsPerSweep) continue;
     }
     // a hit is only expected if the cache should still be alive: our last warm
-    // (or the session's own activity) happened within the interval + slack.
+    // (or the session's own PAID request) happened within the interval + slack.
+    // Only a paid assistant response touches the provider cache — mtime bumps on
+    // resumes/branch edits with zero API calls, so use lastAssistantAt for
+    // cache-touch semantics (fall back to mtime when no paid turn is recorded).
     // No provider offers a free "does this cache exist" probe — status only
     // arrives in the usage of a paid request — so we predict from TTL math.
-    const lastTouch = Math.max(st.lastWarmAt ? Date.parse(st.lastWarmAt) : 0, s.mtime.getTime());
+    const cacheTouch = (s.lastAssistantAt ?? s.mtime).getTime();
+    const lastTouch = Math.max(st.lastWarmAt ? Date.parse(st.lastWarmAt) : 0, cacheTouch);
     let expectHit = now - lastTouch < interval + 10 * 60_000;
 
     // drift re-prime loop: last warm was a full miss (lastCacheRead 0) and the
     // session file has new live activity since. The live session owns the cache
     // now; our resume rendering already proved divergent, so re-warming would
     // repeat the same full-price miss. Gate it like a cold re-prime.
-    if (!forced && st.lastCacheRead === 0 && st.lastWarmAt && s.mtime.getTime() > Date.parse(st.lastWarmAt)) {
+    if (!forced && st.lastCacheRead === 0 && st.lastWarmAt && cacheTouch > Date.parse(st.lastWarmAt)) {
       const estTokens = st.lastInputTokens ?? Math.round(statSync(s.file).size / 4);
       if (cfg.coldReprime === "never" || (cfg.coldReprime !== "always" && estTokens > cfg.coldReprime)) {
         st.disabled =

@@ -60,12 +60,14 @@ export function loadWarmerConfig(): WarmerConfig {
 }
 
 /**
- * Ground truth for the current context size: the usage block of the LAST
- * assistant message in the session file. Unlike the daemon's snapshot or
- * size/4, this survives compaction (which shrinks the next request while the
- * append-only file only grows).
+ * Ground truth for the current context size AND the last paid request: the
+ * usage block of the LAST assistant message in the session file. Unlike the
+ * daemon's snapshot or size/4, this survives compaction (which shrinks the next
+ * request while the append-only file only grows). Returns both the total tokens
+ * and the timestamp of that paid request — the only event that actually touches
+ * the provider cache.
  */
-export function tailContextTokens(file: string): number | undefined {
+export function tailAssistantUsage(file: string): { tokens: number; ts: number } | undefined {
   try {
     const size = statSync(file).size;
     const fd = openSync(file, "r");
@@ -79,10 +81,15 @@ export function tailContextTokens(file: string): number | undefined {
       try {
         const e = JSON.parse(lines[i]) as {
           type?: string;
+          timestamp?: string;
           message?: { role?: string; usage?: { input?: number; cacheRead?: number; cacheWrite?: number } };
         };
         const u = e.type === "message" && e.message?.role === "assistant" ? e.message.usage : undefined;
-        if (u) return (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+        if (u) {
+          const tokens = (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+          const ts = e.timestamp ? Date.parse(e.timestamp) : 0;
+          return { tokens, ts };
+        }
       } catch {}
     }
   } catch {}
@@ -135,15 +142,18 @@ export function predict(ctx: ExtensionContext, cfg: WarmerConfig): Prediction | 
   }
   if (file) {
     try {
-      const fst = statSync(file);
-      if (fst.mtimeMs > lastTouch) {
-        lastTouch = fst.mtimeMs;
+      // Only a paid request (assistant message with usage) touches the provider
+      // cache. mtime bumps on resumes/branch edits/metadata writes with ZERO API
+      // calls, so it must NOT count as a cache touch.
+      const tail = tailAssistantUsage(file);
+      if (tail && tail.ts > lastTouch) {
+        lastTouch = tail.ts;
         touchSource = "session activity";
       }
       // freshest first: real usage from the file tail beats the daemon's
       // (possibly pre-compaction) snapshot, which beats crude size/4
-      if (fst.mtimeMs > lastWarmMs) estTokens = tailContextTokens(file) ?? estTokens;
-      if (!estTokens) estTokens = Math.round(fst.size / 4);
+      if (tail && tail.ts > lastWarmMs) estTokens = tail.tokens;
+      if (!estTokens) estTokens = Math.round(statSync(file).size / 4);
     } catch {}
   }
   // Stale-flag guard: the daemon's prefix-change verdicts (and the pin check)

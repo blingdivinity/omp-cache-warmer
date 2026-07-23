@@ -12,6 +12,7 @@ export interface SessionInfo {
   model: string; // provider/model
   provider: string;
   lastUserAt: Date;
+  lastAssistantAt?: Date;
   mtime: Date;
 }
 
@@ -57,6 +58,7 @@ export function parseSession(file: string, mtime: Date): SessionInfo | null {
   let cwd = "";
   let model = "";
   let lastUserAt: Date | null = null;
+  let lastAssistantAt: Date | null = null;
   let text: string;
   try {
     text = readFileSync(file, "utf8");
@@ -84,9 +86,12 @@ export function parseSession(file: string, mtime: Date): SessionInfo | null {
       const hasText =
         typeof content === "string" || (Array.isArray(content) && content.some((c) => c.type === "text"));
       if (hasText && e.timestamp) lastUserAt = new Date(e.timestamp);
+    } else if (e.type === "message" && e.message?.role === "assistant" && e.message.usage) {
+      // a paid assistant response is the only event that touches the provider cache
+      if (e.timestamp) lastAssistantAt = new Date(e.timestamp);
     }
   }
   if (!id || !model || !lastUserAt) return null;
   const provider = model.includes("/") ? model.split("/")[0] : model;
-  return { id, file, cwd, model, provider, lastUserAt, mtime };
+  return { id, file, cwd, model, provider, lastUserAt, lastAssistantAt: lastAssistantAt ?? undefined, mtime };
 }
