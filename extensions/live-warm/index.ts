@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { statSync } from "node:fs";
 import { IDLE_FLUSH_CUTOFF_MS, intervalMsFor, loadCfg, logLine, markWarmInSharedState, type UsageShape } from "./lib";
+import { ompIdleFlushDisabled } from "../shared/omp-config";
 import { liveWarmBridge } from "../shared/bridge";
 
 /**
@@ -94,7 +95,7 @@ export default function (pi: ExtensionAPI) {
         const intervalMs = intervalMsFor(cfg, cmdCtx.model?.provider);
         const idle = Date.now() - lastActivity;
         if (idle < intervalMs) return; // recently active — cache warm on its own
-        if (idle > IDLE_FLUSH_CUTOFF_MS) {
+        if (idle > IDLE_FLUSH_CUTOFF_MS && !ompIdleFlushDisabled()) {
           logLine(`skipping auto-ping: idle ${Math.round(idle / 60_000)}m past flush cutoff (would trigger the flush)`);
           return;
         }
@@ -156,7 +157,7 @@ export default function (pi: ExtensionAPI) {
       const idleMin = Math.round(idle / 60_000);
       let armPinged = false;
 
-      if (cfg.liveWarm === true && idle >= intervalMs && idle <= IDLE_FLUSH_CUTOFF_MS) {
+      if (cfg.liveWarm === true && idle >= intervalMs && (idle <= IDLE_FLUSH_CUTOFF_MS || ompIdleFlushDisabled())) {
         armPinged = true;
         void runCycle(ctx, "arm")
           .then((res) => {

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { liveWarmBridge } from "../shared/bridge";
+import { ompIdleFlushDisabled } from "../shared/omp-config";
 import { IDLE_FLUSH_WARN_MS, OMP_IDLE_FLUSH_MS, PING_SAFE_IDLE_MS, loadWarmerConfig, predict } from "./lib";
 import { describeChangedPart } from "./diff";
 import { createScorer } from "./score";
@@ -28,7 +29,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setStatus("cache-warmth", undefined);
       return;
     }
-    const idleFlush = Date.now() - lastProcessActivity > IDLE_FLUSH_WARN_MS;
+    const idleFlush = !ompIdleFlushDisabled() && Date.now() - lastProcessActivity > IDLE_FLUSH_WARN_MS;
     if (p.warm && !idleFlush) {
       const min = Math.max(1, Math.round(p.deltaMs / 60_000));
       const label = min >= 60 ? `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}m` : `${min}m`;
@@ -68,7 +69,7 @@ export default function (pi: ExtensionAPI) {
     const p = predict(ctx, cfg);
     if (!p) return;
     const processIdle = Date.now() - lastProcessActivity;
-    const idleFlush = processIdle > IDLE_FLUSH_WARN_MS;
+    const idleFlush = !ompIdleFlushDisabled() && processIdle > IDLE_FLUSH_WARN_MS;
     // effective prediction: a known prefix change means a miss even on a warm cache
     const predictedHit = p.warm && !idleFlush && !p.prefixChanged;
     const stampNow = () =>
@@ -104,7 +105,7 @@ export default function (pi: ExtensionAPI) {
     // must still be warm AND this process must not have crossed omp's 90m
     // idle-flush line. Past either point, a ping pays the exact same full miss
     // the user's message would — offering to "warm" would be a lie.
-    const pingWouldHit = p.warm && processIdle < PING_SAFE_IDLE_MS && !p.prefixChanged;
+    const pingWouldHit = p.warm && (ompIdleFlushDisabled() || processIdle < PING_SAFE_IDLE_MS) && !p.prefixChanged;
     const canLiveWarm = typeof liveWarmBridge.runPing === "function" && pingWouldHit;
     const SEND = "Send now";
     const WARM_SEND = "Warm first, then send";
