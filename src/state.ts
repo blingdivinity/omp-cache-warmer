@@ -13,6 +13,8 @@ export interface SessionState {
   /** lifetime count of detected prefix drifts (each cost one cache write) */
   driftEvents?: number;
   disabled?: string; // reason
+  /** omp version at last warm — a change explains one systemic drift */
+  ompVersion?: string;
 }
 
 export type State = Record<string, SessionState>;

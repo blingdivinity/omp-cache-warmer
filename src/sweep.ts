@@ -20,13 +20,33 @@ function prunePins(now: number) {
   }
 }
 
-function classifyDrift(s: SessionInfo, st: SessionState, res: WarmResult, prevWarmAt: number) {
+function ompVersion(cfg: Config): string {
+  try {
+    const r = Bun.spawnSync([cfg.ompBin, "--version"]);
+    return r.stdout.toString().trim();
+  } catch {
+    return "";
+  }
+}
+
+function classifyDrift(s: SessionInfo, st: SessionState, res: WarmResult, prevWarmAt: number, upgraded: boolean) {
   // Distinguish two drift causes:
   //  - file UNCHANGED since our last warm => the request pipeline itself renders
   //    differently now (omp update, extension change) OR a live omp process
   //    rewrote its in-memory context (idle-flush) — lineage-level divergence.
   //  - file CHANGED => real content drift (new messages, compaction).
   const fileUnchanged = prevWarmAt > 0 && s.mtime.getTime() <= prevWarmAt;
+  if (upgraded) {
+    // systemic one-time event: the omp upgrade changed the rendered prefix
+    // (tool schemas etc.) for EVERY session — expected, don't punish it
+    st.misses = 0;
+    st.driftEvents = (st.driftEvents ?? 0) + 1;
+    log(
+      `  prefix re-primed after omp upgrade (${res.cacheRead}/${res.input} cached, ` +
+        `wrote ${res.cacheWrite}) — not counted toward disable`,
+    );
+    return;
+  }
   st.misses++;
   st.driftEvents = (st.driftEvents ?? 0) + 1;
   log(
@@ -49,6 +69,7 @@ function classifyDrift(s: SessionInfo, st: SessionState, res: WarmResult, prevWa
 }
 
 export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise<void> {
+  const version = ompVersion(cfg);
   const state = loadState();
   const sessions = scanSessions(cfg);
   const now = Date.now();
@@ -90,10 +111,12 @@ export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise
     }
 
     const prevWarmAt = st.lastWarmAt ? Date.parse(st.lastWarmAt) : 0;
+    const upgraded = Boolean(version && st.ompVersion && st.ompVersion !== version);
     log(`warming ${s.id.slice(0, 8)} (${s.model}, cwd=${s.cwd})`);
     const res = await warmSession(cfg, s);
     warmed++;
     st.lastWarmAt = new Date().toISOString();
+    if (version) st.ompVersion = version;
     st.lastCacheRead = res.cacheRead;
     st.lastCacheWrite = res.cacheWrite;
     st.lastInputTokens = res.input;
@@ -122,7 +145,7 @@ export async function sweep(cfg: Config, opts: { force?: string } = {}): Promise
       if (st.disabled?.startsWith("cache predicted expired")) delete st.disabled;
       log(`  cache HIT ${((res.cacheRead / res.input) * 100).toFixed(1)}% (${res.cacheRead}/${res.input} tokens)`);
     } else if (outcome === "drift") {
-      classifyDrift(s, st, res, prevWarmAt);
+      classifyDrift(s, st, res, prevWarmAt, upgraded);
     } else {
       if (st.disabled?.startsWith("cache predicted expired")) delete st.disabled;
       log(`  cold re-prime (${res.cacheRead}/${res.input} cached) — cache rewritten with fresh TTL`);
