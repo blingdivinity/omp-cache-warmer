@@ -160,7 +160,13 @@ export default function (pi: ExtensionAPI) {
       `${reason}\n\nSending now will re-read ~${p.estTokens.toLocaleString()} tokens uncached (then re-prime).\n\nSend anyway?`,
     );
     if (ok) return; // proceed with normal flow
-    ctx.ui.setEditorText(event.text); // give the typed message back
+    // The runtime clears the editor draft AFTER a handler returns handled:true
+    // (dist: `if (K?.handled) { this.ctx.editor.clearDraft(); return }`), so a
+    // synchronous setEditorText here gets wiped. Defer the restore one tick
+    // past the clear via the managed timer.
+    ctx.setTimeout(() => {
+      ctx.ui.setEditorText(event.text);
+    }, 50);
     ctx.ui.notify("Message not sent (predicted cache miss).", "info");
     return { handled: true };
   });
