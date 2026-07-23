@@ -10,8 +10,8 @@
     "extensions": [
       "extensions/warmer.ts",
       "extensions/prefix-pin.ts",
-      "extensions/miss-guard.ts",
-      "extensions/live-warm.ts"
+      "extensions/miss-guard/index.ts",
+      "extensions/live-warm/index.ts"
     ]
   },
   "devDependencies": {

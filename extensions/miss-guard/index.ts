@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { liveWarmBridge } from "./livewarm-shared";
-import { IDLE_FLUSH_WARN_MS, OMP_IDLE_FLUSH_MS, PING_SAFE_IDLE_MS, loadWarmerConfig, predict } from "./miss-guard-lib";
-import { createScorer } from "./miss-guard-score";
+import { liveWarmBridge } from "../shared/bridge";
+import { IDLE_FLUSH_WARN_MS, OMP_IDLE_FLUSH_MS, PING_SAFE_IDLE_MS, loadWarmerConfig, predict } from "./lib";
+import { createScorer } from "./score";
 
 /**
  * Miss guard: predicts the prompt-cache state for this session with the same

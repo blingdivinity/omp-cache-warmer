@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { IDLE_FLUSH_CUTOFF_MS, loadCfg, logLine, markWarmInSharedState, type UsageShape } from "./live-warm-lib";
-import { liveWarmBridge } from "./livewarm-shared";
+import { IDLE_FLUSH_CUTOFF_MS, loadCfg, logLine, markWarmInSharedState, type UsageShape } from "./lib";
+import { liveWarmBridge } from "../shared/bridge";
 
 /**
  * Live self-warming: keeps an OPEN omp session's cache warm from inside the

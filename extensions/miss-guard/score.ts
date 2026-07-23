@@ -3,7 +3,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { DATA_DIR } from "./miss-guard-lib";
+import { DATA_DIR } from "./lib";
 
 export interface StampedPrediction {
   warm: boolean;
