@@ -54,10 +54,15 @@ export function markWarmInSharedState(ctx: ExtensionContext) {
   const id = ctx.sessionManager.getSessionId();
   if (!id) return;
   try {
-    const state = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Record<
-      string,
-      { lastWarmAt?: string; misses?: number }
-    >;
+    let state: Record<string, { lastWarmAt?: string; misses?: number }>;
+    try {
+      state = JSON.parse(readFileSync(STATE_PATH, "utf8")) as Record<
+        string,
+        { lastWarmAt?: string; misses?: number }
+      >;
+    } catch {
+      state = {};
+    }
     state[id] = { ...(state[id] ?? { misses: 0 }), lastWarmAt: new Date().toISOString() };
     writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + "\n");
   } catch {}

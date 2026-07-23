@@ -28,19 +28,22 @@ export default function (pi: ExtensionAPI) {
     if (m.role === "assistant" && m.usage) lastAssistantUsage = m.usage;
   });
 
-  const runCycle = async (ctx: ExtensionCommandContext, tag: string): Promise<void> => {
-    if (cycling) return;
+  const runCycle = async (
+    ctx: ExtensionCommandContext,
+    tag: string,
+  ): Promise<"ok" | "skipped" | "failed"> => {
+    if (cycling) return "skipped";
     cycling = true;
     try {
       const cfg = loadCfg();
       if (!ctx.isIdle() || ctx.hasPendingMessages()) {
         logLine(`[${tag}] skipped: agent busy or pending messages`);
-        return;
+        return "skipped";
       }
       const leaf = ctx.sessionManager.getLeafEntry() as { id?: string } | undefined;
       if (!leaf?.id) {
         logLine(`[${tag}] skipped: no leaf entry`);
-        return;
+        return "skipped";
       }
       logLine(`[${tag}] ping start; leaf=${leaf.id}`);
       pi.sendUserMessage(cfg.message ?? "Respond with only: OK");
@@ -54,18 +57,27 @@ export default function (pi: ExtensionAPI) {
         }
         if (ctx.isIdle()) throw new Error("ping turn never started");
         await ctx.waitForIdle();
-      } finally {
-        const u = lastAssistantUsage;
-        const total = (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
-        logLine(`[${tag}] ping done; read=${u?.cacheRead ?? "?"} write=${u?.cacheWrite ?? "?"} total=${total} — rewinding`);
-        const res = await ctx.navigateTree(leaf.id);
-        logLine(`[${tag}] rewind ${res.cancelled ? "CANCELLED" : "ok"}`);
-        markWarmInSharedState(ctx);
-        if (ctx.hasUI) {
-          const pct = total > 0 ? (((u?.cacheRead ?? 0) / total) * 100).toFixed(1) : "?";
-          ctx.ui.setStatus("live-warm", `♨ pinged ${new Date().toLocaleTimeString()} (${pct}% cached)`);
+      } catch (e) {
+        logLine(`[${tag}] ping FAILED: ${e}`);
+        // best-effort rewind so a partial turn doesn't linger as the new leaf
+        try {
+          await ctx.navigateTree(leaf.id);
+        } catch (re) {
+          logLine(`[${tag}] cleanup rewind failed: ${re}`);
         }
+        return "failed";
       }
+      const u = lastAssistantUsage;
+      const total = (u?.input ?? 0) + (u?.cacheRead ?? 0) + (u?.cacheWrite ?? 0);
+      logLine(`[${tag}] ping done; read=${u?.cacheRead ?? "?"} write=${u?.cacheWrite ?? "?"} total=${total} — rewinding`);
+      const res = await ctx.navigateTree(leaf.id);
+      logLine(`[${tag}] rewind ${res.cancelled ? "CANCELLED" : "ok"}`);
+      markWarmInSharedState(ctx);
+      if (ctx.hasUI) {
+        const pct = total > 0 ? (((u?.cacheRead ?? 0) / total) * 100).toFixed(1) : "?";
+        ctx.ui.setStatus("live-warm", `♨ pinged ${new Date().toLocaleTimeString()} (${pct}% cached)`);
+      }
+      return "ok";
     } finally {
       cycling = false;
     }
@@ -86,8 +98,8 @@ export default function (pi: ExtensionAPI) {
           logLine(`skipping auto-ping: idle ${Math.round(idle / 60_000)}m past flush cutoff (would trigger the flush)`);
           return;
         }
-        await runCycle(cmdCtx, "auto");
-        lastActivity = Date.now();
+        const res = await runCycle(cmdCtx, "auto");
+        if (res === "ok") lastActivity = Date.now();
       })();
     }, 60_000);
   };
@@ -97,8 +109,7 @@ export default function (pi: ExtensionAPI) {
     liveWarmBridge.runPing = async () => {
       if (!cmdCtx) return false;
       try {
-        await runCycle(cmdCtx, "miss-guard");
-        return true;
+        return (await runCycle(cmdCtx, "miss-guard")) === "ok";
       } catch (e) {
         logLine(`bridge ping failed: ${e}`);
         return false;
@@ -148,8 +159,9 @@ export default function (pi: ExtensionAPI) {
       if (cfg.liveWarm === true && idle >= intervalMs && idle <= IDLE_FLUSH_CUTOFF_MS) {
         armPinged = true;
         void runCycle(ctx, "arm")
-          .then(() => {
-            lastActivity = Date.now();
+          .then((res) => {
+            if (res === "ok") lastActivity = Date.now();
+            else logLine(`[arm] arm-ping did not complete: ${res}`);
           })
           .catch((e) => {
             logLine(`[arm] immediate arm-ping failed: ${e}`);
