@@ -9,7 +9,7 @@ const CONTEXT = 60;
 /** First divergence between two prompt renders, with quoted context — or undefined if identical. */
 export function describePromptDiff(pinned: string[], current: string[]): string | undefined {
   if (pinned.length !== current.length) {
-    return `system prompt block count changed: ${pinned.length} → ${current.length} blocks (an extension or omp update added/removed a prompt section)`;
+    return `system prompt block count changed: ${pinned.length} → ${current.length}`;
   }
   for (let b = 0; b < pinned.length; b++) {
     const a = pinned[b];
@@ -50,14 +50,10 @@ export function describeChangedPart(id: string, current: string[], kind: string)
       const d = describePromptDiff(prev, current);
       if (d) return d;
     }
-    return "the pinned system prompt was re-captured (previous pin not retained for diffing)";
+    return "pinned prompt re-captured (old pin not retained for diffing)";
   }
   const pinned = loadPin(id);
   const d = pinned ? describePromptDiff(pinned, current) : undefined;
   if (d) return d;
-  return (
-    "system prompt is unchanged (pinned) — the change is in the MESSAGE-HISTORY rendering " +
-    "(omp pruned/rewrote old tool results, e.g. after long idle or near the context limit) " +
-    "or in TOOL SCHEMAS (omp version update). Those aren't diffable from here."
-  );
+  return "system prompt unchanged (pinned) — change is in message-history rendering (omp pruned old tool results) or tool schemas (omp update)";
 }

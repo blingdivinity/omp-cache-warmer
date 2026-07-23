@@ -84,19 +84,9 @@ export default function (pi: ExtensionAPI) {
 
     const touchAgo = p.lastTouchAt.toLocaleTimeString();
     const PREFIX_WHY: Record<string, string> = {
-      diverged:
-        `WHY: the request PREFIX CHANGED while the session file did not — the warmer's last ping proved the cache ` +
-        `holds an OLD rendering (this process, or an omp/extension update, rewrote the prompt/history). Your message ` +
-        `sends the NEW rendering → miss regardless of cache warmth. /compact or a restart (omp -c) plus ` +
-        `\`omp-cache-warmer warm <id>\` re-aligns the lineages.`,
-      unstable:
-        `WHY: the request PREFIX CHANGES on every render — the daemon saw two consecutive warms mismatch and ` +
-        `auto-disabled warming (something injects churning content into the prompt: timestamps, directory tree, an ` +
-        `extension). Until that source is pinned or removed, EVERY send re-reads the full prefix.`,
-      "pin-refreshed":
-        `WHY: this session's prompt pin was RE-CAPTURED after the cache was last warmed — the warm cache holds the ` +
-        `old pinned prompt, your message sends the new one → one-time miss, then the fresh prefix re-primes and ` +
-        `warming continues normally.`,
+      diverged: `WHY: prefix changed (cache holds an old rendering). Fix: /compact or omp -c, then omp-cache-warmer warm <id>.`,
+      unstable: `WHY: prefix changes every render (churning prompt content) — warming auto-disabled; every send re-reads.`,
+      "pin-refreshed": `WHY: prompt pin re-captured after last warm — one-time miss, then warming resumes.`,
     };
     const changedPart = p.prefixChanged
       ? describeChangedPart(ctx.sessionManager.getSessionId() ?? "", ctx.getSystemPrompt(), p.prefixChanged.kind)
@@ -104,15 +94,11 @@ export default function (pi: ExtensionAPI) {
     const reason = p.prefixChanged
       ? `${PREFIX_WHY[p.prefixChanged.kind]}\n\nWHAT CHANGED: ${changedPart}`
       : p.warm && idleFlush
-        ? `WHY: the provider cache is actually WARM (last refreshed ${touchAgo} by ${p.touchSource}) — but THIS ` +
-          `omp process has been idle ~${Math.round(processIdle / 60_000)}m, past omp's ` +
-          `${Math.round(OMP_IDLE_FLUSH_MS / 60_000)}m idle-flush. On your next message omp rewrites the sent ` +
-          `history in-place, so the request bytes no longer match the warmed prefix → guaranteed miss. ` +
-          `Restarting the session (omp -c) re-renders from the file and WILL hit the warmed prefix instead.`
-        : `WHY: ${p.provider} cache entries survive ~${p.aliveMin}m after their last refresh, and this session's ` +
-          `was last refreshed ${touchAgo} by ${p.touchSource} — ${p.idleMin}m ago, ${p.idleMin - p.aliveMin}m past ` +
-          `expiry.${cfg.coldReprime === "never" ? " (The warmer daemon doesn't revive expired caches: coldReprime=\"never\".)" : ""} Your next request ` +
-          `re-reads the full prefix and re-primes a fresh cache entry.`;
+        ? `WHY: cache is warm (refreshed ${touchAgo} by ${p.touchSource}), but this process idled ` +
+          `${Math.round(processIdle / 60_000)}m > omp's ${Math.round(OMP_IDLE_FLUSH_MS / 60_000)}m idle-flush → omp ` +
+          `rewrites history on send → miss. omp -c would hit instead.`
+        : `WHY: ${p.provider} cache lives ~${p.aliveMin}m; last refreshed ${touchAgo} by ${p.touchSource}, ` +
+          `${p.idleMin - p.aliveMin}m past expiry${cfg.coldReprime === "never" ? " (daemon never revives cold caches)" : ""}.`;
     // "Warm first" is only offered when the ping itself would HIT: the cache
     // must still be warm AND this process must not have crossed omp's 90m
     // idle-flush line. Past either point, a ping pays the exact same full miss
