@@ -1,3 +1,6 @@
+> **⚠️ This project is currently unrecommended for use 😿** 
+omp’s session transcript integrity is currently too unstable for cache warming to work reliably. Until omp supports transcript pinning, I don't recomend using it.
+
 # omp-cache-warmer
 
 **Keep your [oh-my-pi](https://github.com/nicobrenner/oh-my-pi) sessions' prompt caches warm — resume hours later and pay cache-read prices, not cold re-reads.**
